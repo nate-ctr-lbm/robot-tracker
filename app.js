@@ -1,0 +1,2254 @@
+let entries = [];
+  // nextId removed — entries now use Supabase-generated UUIDs; ordering uses nextSeq instead.
+  let currentTaskNumber = 1;
+  let taskInProgress = false;
+  let taskStartTimestamp = null;
+  let currentTaskDescription = '';
+  let pausedTaskElapsed = null;
+  let downtimeInProgress = false;
+  let downtimeStartTimestamp = null;
+  let pausedDowntimeElapsed = null;
+  let lunchInProgress = false;
+  let lunchStartTimestamp = null;
+  let pausedLunchElapsed = null;
+  let deadTimeInProgress = false;
+  let deadTimeStartTimestamp = null;
+  let currentDowntimeCategory = '';
+  let viewingDate = null; // set on init to today's date string
+  let followingToday = true; // true = auto-track today; false = pinned to a specific past/future date
+  let currentOperator = 'Ajar';
+  let mainSessionType = '';
+  let idleThresholdMinutes = 5;
+  let lastActivityTime = new Date();
+  let autoDowntimeActive = false;
+
+  const PREFS_KEY = 'walden_robot_use_tracker_prefs_v1';
+
+  // ---- Supabase config ----
+  // The URL and publishable key below are safe to be public — this is how
+  // Supabase is designed to work. Real protection comes from the Row Level
+  // Security policies set up on the `entries` table in the Supabase project,
+  // not from hiding these values.
+  const SUPABASE_URL = 'https://wwzoubxdgsgtopxrqbin.supabase.co';
+  const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Ind3em91YnhkZ3NndG9weHJxYmluIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODYzOTAxMTQsImV4cCI6MjEwMTk2NjExNH0.84_9fVkGjSfV2FJKZ2D7AtKVdpa2UOrzKg9TTqfzpuM';
+  // One shared login for the whole team — not a real personal account.
+  // Whoever set this up in Supabase's Authentication tab picked this email;
+  // the actual secret is the password, entered as the "passcode" below.
+  const SHARED_LOGIN_EMAIL = 'team@robot-tracker.local';
+  let supabaseClient = null;
+  let nextSeq = 1; // local-only ordering tiebreaker, separate from Supabase's UUID id
+  const pendingDeleteKeys = new Set(); // handles deleting an entry before its insert resolves
+
+  function entryContentKey(e) {
+    return `${e.date}|${e.timestamp}|${e.type}|${e.note}|${e.operator || ''}`;
+  }
+
+  // ---- Google Drive archive (via Apps Script Web App) ----
+  // Currently disabled: the deployed Apps Script is being blocked by CORS
+  // from this account's domain-restricted deployment. Flip this to true
+  // once that's resolved (e.g. redeployed under a personal Google account).
+  const DRIVE_UPLOAD_ENABLED = false;
+  const DRIVE_UPLOAD_URL = 'https://script.google.com/a/macros/lbm.global/s/AKfycbyi-vw6wODrtDRxdU8DT8jI5qqMEfJy64OqoUW_dcbCRGfIRW93DcPcVpgxMUgSVIVq/exec';
+  const DRIVE_UPLOAD_SECRET = 'walden-rt-SfDfu2Ag0baAX2Cz';
+
+  function uploadToDrive(filename, content, mimeType) {
+    if (!DRIVE_UPLOAD_ENABLED || !DRIVE_UPLOAD_URL) return;
+    fetch(DRIVE_UPLOAD_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' }, // avoids a CORS preflight
+      body: JSON.stringify({ secret: DRIVE_UPLOAD_SECRET, filename, content, mimeType })
+    })
+      .then(res => res.json())
+      .then(data => {
+        if (data.ok) {
+          showStatus(`Saved "${filename}" to shared Drive folder`);
+        } else {
+          console.warn('Drive upload rejected:', data.error);
+          showStatus(`Drive save failed: ${data.error || 'unknown error'}`);
+        }
+      })
+      .catch(err => {
+        console.warn('Drive upload failed:', err);
+        showStatus('Drive save failed — see browser console for details');
+      });
+  }
+
+  function rowToEntry(row) {
+    return {
+      id: row.id,
+      seq: nextSeq++,
+      date: row.entry_date,
+      timestamp: row.entry_time,
+      type: row.type,
+      operator: row.operator || '',
+      category: row.category || null,
+      note: row.note || '',
+      durationSeconds: (typeof row.duration_seconds === 'number') ? row.duration_seconds : null
+    };
+  }
+
+  function entryToRow(entry) {
+    return {
+      entry_date: entry.date,
+      entry_time: entry.timestamp,
+      type: entry.type,
+      operator: entry.operator || null,
+      category: entry.category || null,
+      note: entry.note || '',
+      duration_seconds: (typeof entry.durationSeconds === 'number') ? entry.durationSeconds : null
+    };
+  }
+
+  function setSyncStatus(text, cls) {
+    const el = document.getElementById('syncStatus');
+    if (!el) return;
+    el.textContent = text;
+    el.classList.remove('status-connected', 'status-error');
+    if (cls) el.classList.add(cls);
+  }
+
+  // Save personal device preferences only (operator, idle threshold) — never
+  // the shared log data, which lives in Supabase for everyone.
+  function savePrefs() {
+    try {
+      localStorage.setItem(PREFS_KEY, JSON.stringify({
+        currentOperator: currentOperator,
+        idleThresholdMinutes: idleThresholdMinutes
+      }));
+    } catch (err) { /* ignore — prefs are a nice-to-have, not critical */ }
+  }
+
+  function loadPrefs() {
+    try {
+      const raw = localStorage.getItem(PREFS_KEY);
+      if (!raw) return;
+      const prefs = JSON.parse(raw);
+      currentOperator = prefs.currentOperator || 'Ajar';
+      idleThresholdMinutes = (typeof prefs.idleThresholdMinutes === 'number') ? prefs.idleThresholdMinutes : 5;
+    } catch (err) { /* ignore */ }
+  }
+
+  // Kept for backward-compat naming with the rest of the app's call sites —
+  // now just persists personal prefs instead of the shared log.
+  function saveToStorage() {
+    savePrefs();
+  }
+
+  async function initSupabaseSync() {
+    if (typeof supabase === 'undefined') {
+      setSyncStatus('sync library failed to load', 'status-error');
+      return false;
+    }
+    setSyncStatus('connecting…');
+
+    try {
+      const { data, error } = await supabaseClient
+        .from('entries')
+        .select('*')
+        .order('entry_date', { ascending: true })
+        .order('entry_time', { ascending: true });
+
+      if (error) throw error;
+
+      entries = (data || []).map(rowToEntry);
+      setSyncStatus('live — synced with your team', 'status-connected');
+    } catch (err) {
+      console.warn('Initial sync fetch failed:', err);
+      setSyncStatus('offline — check your connection', 'status-error');
+      entries = [];
+    }
+
+    // Real-time: any insert/update/delete from any connected browser gets
+    // pushed here automatically, keeping everyone's view consistent.
+    supabaseClient
+      .channel('entries-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'entries' }, handleRealtimeChange)
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+          setSyncStatus('live — synced with your team', 'status-connected');
+        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+          setSyncStatus('offline — check your connection', 'status-error');
+        }
+      });
+
+    return entries.length > 0;
+  }
+
+  function handleRealtimeChange(payload) {
+    if (payload.eventType === 'INSERT') {
+      const newRow = payload.new;
+      const rowKey = `${newRow.entry_date}|${newRow.entry_time}|${newRow.type}|${newRow.note}|${newRow.operator || ''}`;
+      if (pendingDeleteKeys.has(rowKey)) {
+        pendingDeleteKeys.delete(rowKey);
+        supabaseClient.from('entries').delete().eq('id', newRow.id)
+          .then(({ error }) => { if (error) console.warn('Cleanup delete failed:', error); });
+        return; // don't add it locally — it was already deleted before this landed
+      }
+      // Check if this confirms one of OUR OWN optimistic (not-yet-reconciled)
+      // entries first, matching by content rather than id — the realtime
+      // event can arrive before our own insert's response does.
+      const optimisticMatch = entries.find(e =>
+        String(e.id).startsWith('local_') &&
+        e.date === newRow.entry_date &&
+        e.timestamp === newRow.entry_time &&
+        e.type === newRow.type &&
+        e.note === newRow.note &&
+        (e.operator || '') === (newRow.operator || '')
+      );
+      if (optimisticMatch) {
+        optimisticMatch.id = newRow.id; // silently reconcile, no duplicate
+      } else {
+        const already = entries.some(e => e.id === newRow.id);
+        if (!already) entries.push(rowToEntry(newRow));
+      }
+    } else if (payload.eventType === 'UPDATE') {
+      const idx = entries.findIndex(e => e.id === payload.new.id);
+      if (idx !== -1) {
+        const seq = entries[idx].seq; // preserve local ordering tiebreaker
+        entries[idx] = rowToEntry(payload.new);
+        entries[idx].seq = seq;
+      }
+    } else if (payload.eventType === 'DELETE') {
+      entries = entries.filter(e => e.id !== payload.old.id);
+    }
+    inferTaskNumberFromEntries();
+    renderLog();
+    updateTotals();
+  }
+
+  function updateTaskButton() {
+    const btn = document.getElementById('taskActionBtn');
+    if (taskInProgress) {
+      btn.textContent = '⏹ Stop Timer';
+    } else {
+      btn.textContent = '▶ Start Timer';
+    }
+  }
+
+  function resetIdleTimer() {
+    // Idle-based auto-downtime detection has been removed — downtime is
+    // now fully manual, an operator's own deliberate choice. This function
+    // is kept as a harmless no-op since many call sites still reference it.
+  }
+
+  function autoCloseDowntime(reason) {
+    if (!downtimeInProgress || !downtimeStartTimestamp) return;
+    const durationSeconds = Math.round((new Date() - downtimeStartTimestamp) / 1000);
+    const category = currentDowntimeCategory || null;
+    logEntry('Downtime', `Downtime ended (${formatDuration(durationSeconds)}) — auto-closed: ${reason}`, durationSeconds, category);
+    downtimeInProgress = false;
+    downtimeStartTimestamp = null;
+    autoDowntimeActive = false;
+    currentDowntimeCategory = '';
+    const categorySelect = document.getElementById('downtimeCategorySelect');
+    categorySelect.value = '';
+    categorySelect.disabled = false;
+    updateDowntimeButton();
+    updateTotals();
+  }
+
+  let currentTargetMinutes = null;
+
+  function handleTaskAction() {
+    if (sessionEnded) {
+      showStatus('⚠ Start a Session first');
+      return;
+    }
+    resetIdleTimer();
+    // If downtime is currently open and we're about to start a new task,
+    // close the downtime first so it doesn't overlap with active work.
+    if (!taskInProgress && downtimeInProgress) {
+      autoCloseDowntime('task started');
+    }
+    if (!taskInProgress && lunchInProgress) {
+      autoCloseLunch('task started');
+    }
+
+    const noteInput = document.getElementById('noteInput');
+    const descInput = document.getElementById('taskDescInput');
+    const targetInput = document.getElementById('targetDurationInput');
+    const extra = noteInput.value.trim();
+    let baseNote, durationSeconds = null;
+
+    if (taskInProgress) {
+      baseNote = `Task ${currentTaskNumber} completed`;
+      if (taskStartTimestamp) {
+        durationSeconds = Math.round((new Date() - taskStartTimestamp) / 1000);
+        baseNote += ` (${formatDuration(durationSeconds)})`;
+      }
+      if (currentTargetMinutes) {
+        const targetSeconds = currentTargetMinutes * 60;
+        const diff = durationSeconds - targetSeconds;
+        if (Math.abs(diff) < 15) {
+          baseNote += ` — on target (${currentTargetMinutes}m)`;
+        } else if (diff > 0) {
+          baseNote += ` — target ${currentTargetMinutes}m, ${formatDuration(diff)} over`;
+        } else {
+          baseNote += ` — target ${currentTargetMinutes}m, ${formatDuration(-diff)} under`;
+        }
+      }
+    } else {
+      baseNote = `Task ${currentTaskNumber} started`;
+      taskStartTimestamp = new Date();
+      currentTaskDescription = descInput.value.trim();
+      const targetVal = parseInt(targetInput.value, 10);
+      currentTargetMinutes = (targetVal > 0) ? targetVal : null;
+      if (currentTargetMinutes) baseNote += ` — target ${currentTargetMinutes}m`;
+    }
+
+    const suffixParts = [];
+    if (currentTaskDescription) suffixParts.push(currentTaskDescription);
+    if (extra) suffixParts.push(extra);
+    const note = suffixParts.length ? `${baseNote} — ${suffixParts.join('; ')}` : baseNote;
+
+    logEntry('Active', note, durationSeconds);
+    noteInput.value = '';
+
+    if (taskInProgress) {
+      taskInProgress = false;
+      taskStartTimestamp = null;
+      currentTaskNumber += 1;
+      currentTaskDescription = '';
+      currentTargetMinutes = null;
+      descInput.value = '';
+      descInput.disabled = false;
+      targetInput.value = '';
+      targetInput.disabled = false;
+      document.getElementById('taskProgressWrap').style.display = 'none';
+    } else {
+      taskInProgress = true;
+      descInput.disabled = true;
+      targetInput.disabled = true;
+      document.getElementById('taskProgressWrap').style.display = 'block';
+    }
+    updateTaskButton();
+    updateTotals();
+  }
+
+  function handleDowntimeAction() {
+    if (sessionEnded) {
+      showStatus('⚠ Start a Session first');
+      return;
+    }
+    resetIdleTimer();
+    const categorySelect = document.getElementById('downtimeCategorySelect');
+
+    if (!downtimeInProgress && !categorySelect.value) {
+      showStatus('⚠ Pick a downtime reason before starting');
+      categorySelect.focus();
+      return;
+    }
+
+    if (!downtimeInProgress && lunchInProgress) {
+      autoCloseLunch('downtime started');
+    }
+    let baseNote, durationSeconds = null, category = null;
+
+    if (downtimeInProgress) {
+      baseNote = 'Downtime ended';
+      category = currentDowntimeCategory || null;
+      if (downtimeStartTimestamp) {
+        durationSeconds = Math.round((new Date() - downtimeStartTimestamp) / 1000);
+        baseNote += ` (${formatDuration(durationSeconds)})`;
+      }
+      if (category) baseNote += ` — ${category}`;
+    } else {
+      baseNote = 'Downtime started';
+      downtimeStartTimestamp = new Date();
+      currentDowntimeCategory = categorySelect.value;
+      category = currentDowntimeCategory;
+      baseNote += ` — ${category}`;
+      categorySelect.disabled = true;
+    }
+
+    logEntry('Downtime', baseNote, durationSeconds, category);
+
+    downtimeInProgress = !downtimeInProgress;
+    if (!downtimeInProgress) {
+      downtimeStartTimestamp = null;
+      currentDowntimeCategory = '';
+      categorySelect.value = '';
+      categorySelect.disabled = false;
+    }
+    autoDowntimeActive = false; // any manual toggle clears the auto flag
+    updateDowntimeButton();
+    updateTotals();
+  }
+
+  function updateDowntimeButton() {
+    const btn = document.getElementById('downtimeActionBtn');
+    btn.textContent = downtimeInProgress ? '▶ End Downtime' : '⏸ Start Downtime';
+  }
+
+  function handleLunchAction() {
+    if (sessionEnded) {
+      showStatus('⚠ Start a Session first');
+      return;
+    }
+    resetIdleTimer();
+    // Lunch and downtime are mutually exclusive states
+    if (!lunchInProgress && downtimeInProgress) {
+      autoCloseDowntime('lunch started');
+    }
+
+    let baseNote, durationSeconds = null;
+
+    if (lunchInProgress) {
+      baseNote = 'Lunch ended';
+      if (lunchStartTimestamp) {
+        durationSeconds = Math.round((new Date() - lunchStartTimestamp) / 1000);
+        baseNote += ` (${formatDuration(durationSeconds)})`;
+      }
+    } else {
+      baseNote = 'Lunch started';
+      lunchStartTimestamp = new Date();
+    }
+
+    logEntry('Lunch', baseNote, durationSeconds);
+
+    lunchInProgress = !lunchInProgress;
+    if (!lunchInProgress) lunchStartTimestamp = null;
+    updateLunchButton();
+    updateTotals();
+  }
+
+  function updateLunchButton() {
+    const btn = document.getElementById('lunchActionBtn');
+    btn.textContent = lunchInProgress ? '▶ End Lunch' : '🍽 Start Lunch';
+  }
+
+  function autoCloseLunch(reason) {
+    if (!lunchInProgress || !lunchStartTimestamp) return;
+    const durationSeconds = Math.round((new Date() - lunchStartTimestamp) / 1000);
+    logEntry('Lunch', `Lunch ended (${formatDuration(durationSeconds)}) — auto-closed: ${reason}`, durationSeconds);
+    lunchInProgress = false;
+    lunchStartTimestamp = null;
+    updateLunchButton();
+    updateTotals();
+  }
+
+  function formatDuration(totalSeconds) {
+    const m = Math.floor(totalSeconds / 60);
+    const s = totalSeconds % 60;
+    return `${m}m ${s}s`;
+  }
+
+  function updateCurrentStatusPill() {
+    const pill = document.getElementById('currentStatusPill');
+    const text = document.getElementById('currentStatusText');
+    if (!pill || !text) return;
+    pill.classList.remove('pill-working', 'pill-downtime', 'pill-lunch', 'pill-deadtime');
+
+    if (taskInProgress) {
+      pill.classList.add('pill-working');
+      const desc = currentTaskDescription ? ` — ${currentTaskDescription}` : '';
+      text.textContent = `Working on Task ${currentTaskNumber}${desc}`;
+    } else if (downtimeInProgress) {
+      pill.classList.add('pill-downtime');
+      const cat = currentDowntimeCategory ? ` (${currentDowntimeCategory})` : '';
+      text.textContent = `Downtime${cat}`;
+    } else if (lunchInProgress) {
+      pill.classList.add('pill-lunch');
+      text.textContent = 'At Lunch';
+    } else if (deadTimeInProgress) {
+      pill.classList.add('pill-deadtime');
+      text.textContent = 'Off Headset (between sessions)';
+    } else {
+      text.textContent = 'Idle — not tracking anything';
+    }
+  }
+
+  function updateTotals() {
+    let totalSeconds = 0;
+    let tasksCompleted = 0;
+    let totalDowntimeSeconds = 0;
+    let totalLunchSeconds = 0;
+    let totalDeadTimeSeconds = 0;
+
+    // Build a lookup of task-number -> start timestamp (in seconds-of-day),
+    // taking entries in chronological order so each "started" pairs with
+    // the next "completed" for the same task number.
+    const sorted = getViewingEntries().sort((a, b) => (entrySortValue(a) - entrySortValue(b)) || (a.seq - b.seq));
+    const openStarts = {};
+    let openDowntimeStart = null;
+    let openLunchStart = null;
+    let openDeadTimeStart = null;
+
+    sorted.forEach(e => {
+      const note = e.note || '';
+      const startMatch = note.match(/task\s+(\d+)\s+started/i);
+      const completeMatch = note.match(/task\s+(\d+)\s+(completed|compled)/i);
+      const downtimeStartMatch = /downtime\s+started/i.test(note);
+      const downtimeEndMatch = /downtime\s+(ended|completed)/i.test(note);
+      const lunchStartMatch = /lunch\s+started/i.test(note);
+      const lunchEndMatch = /lunch\s+(ended|completed)/i.test(note);
+      const deadTimeStartMatch = /dead time\s+started/i.test(note);
+      const deadTimeEndMatch = /dead time\s+(ended|completed)/i.test(note);
+
+      if (startMatch) {
+        openStarts[startMatch[1]] = timeToMinutes(e.timestamp);
+      } else if (completeMatch) {
+        tasksCompleted += 1;
+        const num = completeMatch[1];
+        if (typeof e.durationSeconds === 'number') {
+          totalSeconds += e.durationSeconds;
+        } else if (openStarts.hasOwnProperty(num)) {
+          const diff = timeToMinutes(e.timestamp) - openStarts[num];
+          if (diff > 0) totalSeconds += diff;
+        }
+        delete openStarts[num];
+      } else if (downtimeStartMatch) {
+        openDowntimeStart = timeToMinutes(e.timestamp);
+      } else if (downtimeEndMatch) {
+        if (typeof e.durationSeconds === 'number') {
+          totalDowntimeSeconds += e.durationSeconds;
+        } else if (openDowntimeStart !== null) {
+          const diff = timeToMinutes(e.timestamp) - openDowntimeStart;
+          if (diff > 0) totalDowntimeSeconds += diff;
+        }
+        openDowntimeStart = null;
+      } else if (lunchStartMatch) {
+        openLunchStart = timeToMinutes(e.timestamp);
+      } else if (lunchEndMatch) {
+        if (typeof e.durationSeconds === 'number') {
+          totalLunchSeconds += e.durationSeconds;
+        } else if (openLunchStart !== null) {
+          const diff = timeToMinutes(e.timestamp) - openLunchStart;
+          if (diff > 0) totalLunchSeconds += diff;
+        }
+        openLunchStart = null;
+      } else if (deadTimeStartMatch) {
+        openDeadTimeStart = timeToMinutes(e.timestamp);
+      } else if (deadTimeEndMatch) {
+        if (typeof e.durationSeconds === 'number') {
+          totalDeadTimeSeconds += e.durationSeconds;
+        } else if (openDeadTimeStart !== null) {
+          const diff = timeToMinutes(e.timestamp) - openDeadTimeStart;
+          if (diff > 0) totalDeadTimeSeconds += diff;
+        }
+        openDeadTimeStart = null;
+      }
+    });
+
+    document.getElementById('totalActiveDisplay').textContent = formatDuration(totalSeconds);
+    document.getElementById('totalDowntimeDisplay').textContent = formatDuration(totalDowntimeSeconds);
+    document.getElementById('totalLunchDisplay').textContent = formatDuration(totalLunchSeconds);
+    if (document.getElementById('totalDeadTimeDisplay')) {
+      document.getElementById('totalDeadTimeDisplay').textContent = formatDuration(totalDeadTimeSeconds);
+    }
+    updateSessionDuration(sorted);
+    document.getElementById('totalTasksDisplay').textContent = tasksCompleted;
+    updateCurrentStatusPill();
+    saveToStorage();
+  }
+
+  function computeLunchSecondsInSegment(segmentEntries) {
+    return computeCategorySecondsInSegment(segmentEntries, 'lunch');
+  }
+
+  function computeCategorySecondsInSegment(segmentEntries, category) {
+    let total = 0;
+    let openStart = null;
+    const startRe = new RegExp(category + '\\s+started', 'i');
+    const endRe = new RegExp(category + '\\s+(ended|completed)', 'i');
+    segmentEntries.forEach(e => {
+      const note = e.note || '';
+      if (startRe.test(note)) {
+        openStart = timeToMinutes(e.timestamp);
+      } else if (endRe.test(note)) {
+        if (typeof e.durationSeconds === 'number') {
+          total += e.durationSeconds;
+        } else if (openStart !== null) {
+          const diff = timeToMinutes(e.timestamp) - openStart;
+          if (diff > 0) total += diff;
+        }
+        openStart = null;
+      }
+    });
+    return total;
+  }
+
+  function updateSessionDuration(sortedEntries) {
+    const display = document.getElementById('sessionDurationDisplay');
+    const label = document.getElementById('sessionDurationLabel');
+
+    if (!sortedEntries || sortedEntries.length === 0) {
+      display.textContent = '0m 0s';
+      label.textContent = 'Session 1 Duration';
+      return;
+    }
+
+    // Session boundaries are marked by Session-type entries. Count how many
+    // "new session started" markers precede the end of the log to figure
+    // out which session number we're currently in, and find where the
+    // current session's own entries begin.
+    let sessionNumber = 1;
+    let currentSessionStartIndex = 0;
+
+    sortedEntries.forEach((e, idx) => {
+      if (e.type === 'Session' && /new session started/i.test(e.note || '')) {
+        sessionNumber += 1;
+        currentSessionStartIndex = idx;
+      }
+    });
+
+    const currentSessionEntries = sortedEntries.slice(currentSessionStartIndex);
+    label.textContent = `Session ${sessionNumber} Duration`;
+
+    const firstSeconds = timeToMinutes(currentSessionEntries[0].timestamp);
+    const lastEntrySeconds = timeToMinutes(currentSessionEntries[currentSessionEntries.length - 1].timestamp);
+
+    // Once the session is explicitly ended (or the clock is paused), freeze
+    // at the last logged entry. Otherwise treat the session as still
+    // ongoing and count up to the current moment.
+    const now = new Date();
+    const nowSeconds = now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds();
+    const endSeconds = (sessionEnded || clockPaused) ? lastEntrySeconds : Math.max(lastEntrySeconds, nowSeconds);
+
+    let diff = endSeconds - firstSeconds;
+    if (diff < 0) diff += 24 * 3600; // handle crossing midnight
+    diff -= computeLunchSecondsInSegment(currentSessionEntries);
+    if (diff < 0) diff = 0;
+    display.textContent = formatDuration(diff);
+
+    updateDowntimeAlert(currentSessionEntries, diff, sessionNumber);
+    renderSessionsPanel(sortedEntries);
+  }
+
+  function updateDowntimeAlert(currentSessionEntries, sessionSpanSeconds, sessionNumber) {
+    const banner = document.getElementById('downtimeAlert');
+    const DOWNTIME_ALERT_THRESHOLD_PCT = 20;
+
+    if (sessionSpanSeconds <= 0) {
+      banner.style.display = 'none';
+      return;
+    }
+
+    const downtimeSecs = computeCategorySecondsInSegment(currentSessionEntries, 'downtime');
+    const pct = Math.round((downtimeSecs / sessionSpanSeconds) * 100);
+
+    if (pct >= DOWNTIME_ALERT_THRESHOLD_PCT) {
+      banner.style.display = 'block';
+      banner.textContent = `⚠ High downtime this session: ${pct}% (${formatDuration(downtimeSecs)} of ${formatDuration(sessionSpanSeconds)})`;
+    } else {
+      banner.style.display = 'none';
+    }
+  }
+
+  function renderSessionsPanel(sortedEntries) {
+    const panel = document.getElementById('sessionsPanel');
+    const list = document.getElementById('sessionsList');
+
+    if (!sortedEntries || sortedEntries.length === 0) {
+      panel.style.display = 'none';
+      return;
+    }
+
+    // Split the log into segments at each "new session started" marker.
+    const segments = [];
+    let segStart = 0;
+    sortedEntries.forEach((e, idx) => {
+      if (e.type === 'Session' && /new session started/i.test(e.note || '')) {
+        segments.push(sortedEntries.slice(segStart, idx));
+        segStart = idx;
+      }
+    });
+    segments.push(sortedEntries.slice(segStart));
+
+    if (segments.length < 2) {
+      // Only one session so far — no need to clutter the UI with a
+      // breakdown of just itself; the totals row already covers it.
+      panel.style.display = 'none';
+      return;
+    }
+
+    panel.style.display = 'block';
+    const now = new Date();
+    const nowSeconds = now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds();
+
+    list.innerHTML = segments.map((seg, i) => {
+      if (seg.length === 0) return '';
+      const startTs = seg[0].timestamp;
+      const lastTs = seg[seg.length - 1].timestamp;
+      const isLastSegment = (i === segments.length - 1);
+      const ongoing = isLastSegment && !sessionEnded;
+
+      const startSec = timeToMinutes(startTs);
+      const lastSec = timeToMinutes(lastTs);
+      const endSec = ongoing ? Math.max(lastSec, nowSeconds) : lastSec;
+      let diff = endSec - startSec;
+      if (diff < 0) diff += 24 * 3600;
+      diff -= computeLunchSecondsInSegment(seg);
+      if (diff < 0) diff = 0;
+
+      const endLabel = ongoing ? 'ongoing' : lastTs;
+
+      return `
+        <div class="session-row">
+          <div>
+            <div class="session-row-name">Session ${i + 1}</div>
+            <div class="session-row-range">${startTs} → ${endLabel}</div>
+          </div>
+          <div class="session-row-duration ${ongoing ? 'ongoing' : ''}">${formatDuration(diff)}</div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  function pad(n) { return n.toString().padStart(2, '0'); }
+
+  let clockPaused = false;
+  let sessionEnded = true;
+  let clockIntervalId = null;
+
+  function tick() {
+    if (clockPaused) return;
+    const now = new Date();
+    let h = now.getHours();
+    const ampm = h >= 12 ? 'PM' : 'AM';
+    h = h % 12; if (h === 0) h = 12;
+    document.getElementById('clockTime').textContent =
+      `${pad(h)}:${pad(now.getMinutes())}:${pad(now.getSeconds())} ${ampm}`;
+    document.getElementById('clockDate').textContent =
+      now.toLocaleDateString(undefined, { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' });
+
+    // If we're following "today" and the calendar date has rolled over
+    // (e.g. left the tab open past midnight), automatically move the
+    // viewing date forward and give today a fresh set of counters.
+    // Nothing is deleted — yesterday's data stays exactly where it is.
+    if (followingToday && viewingDate !== todayDateString()) {
+      viewingDate = todayDateString();
+      updateDateNavUI();
+      performReset("New day — counters reset. Yesterday's log is still available via the date picker.", false);
+    }
+
+    const viewEntries = getViewingEntries();
+    if (viewEntries.length > 0) {
+      const sorted = viewEntries.slice().sort((a, b) => (entrySortValue(a) - entrySortValue(b)) || (a.seq - b.seq));
+      updateSessionDuration(sorted);
+    }
+
+    updateTaskProgressDisplay();
+    updateSessionProgressBar();
+  }
+  clockIntervalId = setInterval(tick, 1000);
+  // Idle-check interval removed — downtime is fully manual now.
+  tick();
+
+  function updateTaskProgressDisplay() {
+    const wrap = document.getElementById('taskProgressWrap');
+    if (!taskInProgress || !taskStartTimestamp) {
+      if (wrap) wrap.style.display = 'none';
+      return;
+    }
+    const elapsedSeconds = Math.round((new Date() - taskStartTimestamp) / 1000);
+    const label = document.getElementById('taskProgressLabel');
+    const fill = document.getElementById('taskProgressFill');
+    if (!label || !fill) return;
+
+    if (currentTargetMinutes) {
+      const targetSeconds = currentTargetMinutes * 60;
+      const pct = Math.min(100, Math.round((elapsedSeconds / targetSeconds) * 100));
+      fill.style.width = pct + '%';
+      fill.classList.toggle('over-target', elapsedSeconds > targetSeconds);
+      const remaining = targetSeconds - elapsedSeconds;
+      label.textContent = remaining >= 0
+        ? `${formatDuration(elapsedSeconds)} elapsed — ${formatDuration(remaining)} left of ${currentTargetMinutes}m target`
+        : `${formatDuration(elapsedSeconds)} elapsed — ${formatDuration(-remaining)} over the ${currentTargetMinutes}m target`;
+    } else {
+      fill.style.width = '100%';
+      fill.classList.remove('over-target');
+      label.textContent = `${formatDuration(elapsedSeconds)} elapsed — no target set`;
+    }
+  }
+
+  function updateSessionProgressBar() {
+    const wrap = document.getElementById('sessionProgressWrap');
+    if (!wrap) return;
+    wrap.style.display = 'block'; // always visible now — content adapts to state
+
+    if (sessionEnded) {
+      document.getElementById('sessionProgressOperator').textContent = 'No active session';
+      document.getElementById('sessionProgressElapsed').textContent = 'Tap "Start New Session" to begin';
+      document.getElementById('segActive').style.width = '0%';
+      document.getElementById('segDowntime').style.width = '0%';
+      document.getElementById('segLunch').style.width = '0%';
+      return;
+    }
+
+    const viewEntries = getViewingEntries();
+    if (viewEntries.length === 0) {
+      document.getElementById('sessionProgressOperator').textContent = currentOperator || '—';
+      document.getElementById('sessionProgressElapsed').textContent = 'Session not started yet';
+      document.getElementById('segActive').style.width = '0%';
+      document.getElementById('segDowntime').style.width = '0%';
+      document.getElementById('segLunch').style.width = '0%';
+      return;
+    }
+
+    const sorted = viewEntries.slice().sort((a, b) => (entrySortValue(a) - entrySortValue(b)) || (a.seq - b.seq));
+    const segments = [];
+    let segStart = 0;
+    sorted.forEach((e, idx) => {
+      if (e.type === 'Session' && /new session started/i.test(e.note || '')) {
+        segments.push(sorted.slice(segStart, idx));
+        segStart = idx;
+      }
+    });
+    segments.push(sorted.slice(segStart));
+    const currentSeg = segments[segments.length - 1];
+    if (!currentSeg || currentSeg.length === 0) {
+      document.getElementById('sessionProgressOperator').textContent = currentOperator || '—';
+      document.getElementById('sessionProgressElapsed').textContent = 'Session not started yet';
+      return;
+    }
+
+    wrap.style.display = 'block';
+    const startSec = timeToMinutes(currentSeg[0].timestamp);
+    const now = new Date();
+    const nowSec = now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds();
+    let totalElapsed = nowSec - startSec;
+    if (totalElapsed < 0) totalElapsed += 24 * 3600;
+    if (totalElapsed <= 0) totalElapsed = 1;
+
+    const downtimeSecs = computeCategorySecondsInSegment(currentSeg, 'downtime');
+    const lunchSecs = computeCategorySecondsInSegment(currentSeg, 'lunch');
+    const activeSecs = Math.max(0, totalElapsed - downtimeSecs - lunchSecs);
+
+    document.getElementById('segActive').style.width = (activeSecs / totalElapsed * 100) + '%';
+    document.getElementById('segDowntime').style.width = (downtimeSecs / totalElapsed * 100) + '%';
+    document.getElementById('segLunch').style.width = (lunchSecs / totalElapsed * 100) + '%';
+    document.getElementById('sessionProgressOperator').textContent = currentOperator || '—';
+    document.getElementById('sessionProgressElapsed').textContent = formatDuration(totalElapsed) + ' elapsed';
+  }
+
+  function toggleClock() {
+    clockPaused = !clockPaused;
+    const btn = document.getElementById('clockToggleBtn');
+    if (clockPaused) {
+      btn.textContent = '▶ Resume Clock';
+      btn.classList.add('paused');
+      // Freeze any in-progress task timer so paused time isn't counted
+      if (taskInProgress && taskStartTimestamp) {
+        pausedTaskElapsed = new Date() - taskStartTimestamp;
+        taskStartTimestamp = null;
+      }
+      if (downtimeInProgress && downtimeStartTimestamp) {
+        pausedDowntimeElapsed = new Date() - downtimeStartTimestamp;
+        downtimeStartTimestamp = null;
+      }
+      if (lunchInProgress && lunchStartTimestamp) {
+        pausedLunchElapsed = new Date() - lunchStartTimestamp;
+        lunchStartTimestamp = null;
+      }
+      showStatus('Clock paused');
+    } else {
+      btn.textContent = '⏸ Pause Clock';
+      btn.classList.remove('paused');
+      // Resume task timer, accounting for time already elapsed before pause
+      if (taskInProgress && pausedTaskElapsed !== null) {
+        taskStartTimestamp = new Date(new Date() - pausedTaskElapsed);
+        pausedTaskElapsed = null;
+      }
+      if (downtimeInProgress && pausedDowntimeElapsed !== null) {
+        downtimeStartTimestamp = new Date(new Date() - pausedDowntimeElapsed);
+        pausedDowntimeElapsed = null;
+      }
+      if (lunchInProgress && pausedLunchElapsed !== null) {
+        lunchStartTimestamp = new Date(new Date() - pausedLunchElapsed);
+        pausedLunchElapsed = null;
+      }
+      tick();
+      showStatus('Clock resumed');
+    }
+    saveToStorage();
+  }
+
+  function syncOperatorSelect() {
+    const select = document.getElementById('operatorSelect');
+    const exists = Array.from(select.options).some(o => o.value === currentOperator);
+    if (!exists && currentOperator) {
+      const opt = document.createElement('option');
+      opt.value = currentOperator;
+      opt.textContent = currentOperator;
+      select.insertBefore(opt, select.querySelector('option[value="Other"]'));
+    }
+    select.value = currentOperator || 'Ajar';
+  }
+
+  function handleOperatorChange() {
+    resetIdleTimer();
+    const select = document.getElementById('operatorSelect');
+    let value = select.value;
+    if (value === 'Other') {
+      const name = prompt('Enter operator name:');
+      if (!name) {
+        select.value = currentOperator; // revert if cancelled
+        return;
+      }
+      value = name.trim();
+      // Add as a new option so it stays selectable going forward
+      const opt = document.createElement('option');
+      opt.value = value;
+      opt.textContent = value;
+      select.insertBefore(opt, select.querySelector('option[value="Other"]'));
+      select.value = value;
+    }
+    currentOperator = value;
+    logEntry('Session', `Operator changed to ${value}`);
+    saveToStorage();
+  }
+
+  function logEntry(type, note, durationSeconds, category) {
+    const now = new Date();
+    const entry = {
+      id: `local_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      seq: nextSeq++,
+      date: now.toLocaleDateString('en-CA'), // YYYY-MM-DD, unambiguous and sortable
+      timestamp: now.toLocaleTimeString(undefined, { hour12: true }),
+      type: type,
+      note: note || '',
+      operator: currentOperator || '',
+      category: category || null,
+      durationSeconds: (typeof durationSeconds === 'number') ? durationSeconds : null
+    };
+    entries.push(entry);
+    renderLog();
+    updateTotals();
+    showStatus(`Logged ${type.toLowerCase()} at ${entry.timestamp}`);
+
+    if (!supabaseClient) return;
+    supabaseClient.from('entries').insert(entryToRow(entry)).select().single()
+      .then(({ data, error }) => {
+        if (error) {
+          console.warn('Sync failed for entry:', error);
+          setSyncStatus('offline — some entries not yet synced', 'status-error');
+          return;
+        }
+        const key = entryContentKey(entry);
+        if (pendingDeleteKeys.has(key)) {
+          // It was deleted locally before this insert even resolved —
+          // clean up the row that just landed rather than resurrecting it.
+          pendingDeleteKeys.delete(key);
+          supabaseClient.from('entries').delete().eq('id', data.id)
+            .then(({ error: delErr }) => {
+              if (delErr) console.warn('Cleanup delete failed:', delErr);
+            });
+          return;
+        }
+        // Reconcile the local optimistic entry with its real Supabase id,
+        // so later edits/deletes target the right row.
+        const local = entries.find(e => e.id === entry.id);
+        if (local) local.id = data.id;
+      })
+      .catch(err => {
+        console.warn('Sync failed for entry:', err);
+        setSyncStatus('offline — some entries not yet synced', 'status-error');
+      });
+  }
+
+  function showStatus(msg) {
+    const el = document.getElementById('status');
+    el.textContent = msg;
+    setTimeout(() => { if (el.textContent === msg) el.textContent = ''; }, 2500);
+  }
+
+  function renderLog() {
+    const body = document.getElementById('logBody');
+    const empty = document.getElementById('emptyState');
+    const table = document.getElementById('logTable');
+    const viewEntries = getViewingEntries();
+    document.getElementById('entryCount').textContent = `${viewEntries.length} entr${viewEntries.length === 1 ? 'y' : 'ies'}`;
+
+    if (viewEntries.length === 0) {
+      table.style.display = 'none';
+      empty.style.display = 'block';
+      empty.textContent = isViewingToday()
+        ? "No entries yet — press a button above to start logging."
+        : "No entries logged on this day.";
+      return;
+    }
+    table.style.display = 'table';
+    empty.style.display = 'none';
+
+    body.innerHTML = viewEntries.slice().sort((a, b) => (entrySortValue(b) - entrySortValue(a)) || (b.seq - a.seq)).map(e => `
+      <tr data-id="${e.id}">
+        <td>${formatDateShort(e.date)}</td>
+        <td>${e.timestamp}</td>
+        <td><span class="tag ${e.type === 'Active' ? 'tag-active' : e.type === 'Session' ? 'tag-session' : e.type === 'Lunch' ? 'tag-lunch' : e.type === 'DeadTime' ? 'tag-deadtime' : 'tag-downtime'}">${e.type === 'DeadTime' ? 'Dead Time' : e.type}</span></td>
+        <td>${e.operator ? escapeHtml(e.operator) : '<span style="color:var(--muted)">—</span>'}</td>
+        <td class="note-cell">${e.note ? escapeHtml(e.note) : '<span style="color:var(--muted)">—</span>'}</td>
+        <td>
+          <button class="edit-btn" onclick="startEdit('${e.id}')">Edit</button>
+          <button class="delete-btn" onclick="deleteEntry('${e.id}')">Delete</button>
+        </td>
+      </tr>
+    `).join('');
+  }
+
+  function startEdit(id) {
+    const entry = entries.find(x => x.id === id);
+    if (!entry) return;
+    const row = document.querySelector(`tr[data-id="${id}"]`);
+    const noteCell = row.querySelector('.note-cell');
+    noteCell.innerHTML = `
+      <input type="text" class="edit-input" value="${escapeAttr(entry.note || '')}" />
+    `;
+    const actionCell = row.querySelector('.edit-btn').parentElement;
+    actionCell.innerHTML = `
+      <button class="save-btn" onclick="saveEdit('${id}')">Save</button>
+    `;
+    row.querySelector('.edit-input').focus();
+    row.querySelector('.edit-input').addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter') saveEdit(id);
+    });
+  }
+
+  function saveEdit(id) {
+    resetIdleTimer();
+    const row = document.querySelector(`tr[data-id="${id}"]`);
+    const input = row.querySelector('.edit-input');
+    const entry = entries.find(x => x.id === id);
+    if (entry) {
+      entry.note = input.value.trim();
+      showStatus(`Note updated for ${entry.timestamp}`);
+      if (supabaseClient && !String(id).startsWith('local_')) {
+        supabaseClient.from('entries').update({ note: entry.note }).eq('id', id)
+          .then(({ error }) => {
+            if (error) {
+              console.warn('Edit sync failed:', error);
+              setSyncStatus('offline — edit not yet synced', 'status-error');
+            }
+          });
+      }
+    }
+    renderLog();
+    updateTotals();
+  }
+
+  function deleteEntry(id) {
+    resetIdleTimer();
+    const entry = entries.find(x => x.id === id);
+    if (!entry) return;
+    if (!confirm(`Delete this entry?\n\n${entry.timestamp} — ${entry.type} — ${entry.note || '(no note)'}\n\nThis cannot be undone, for the whole team.`)) {
+      return;
+    }
+
+    entries = entries.filter(x => x.id !== id);
+    renderLog();
+    updateTotals();
+    showStatus('Entry deleted');
+
+    if (!supabaseClient) return;
+
+    if (String(id).startsWith('local_')) {
+      // The insert for this entry hasn't resolved yet — we don't know its
+      // real Supabase id. Remember its content so that whenever the insert
+      // (or the realtime echo of it) does land, it gets deleted immediately
+      // instead of quietly reappearing.
+      pendingDeleteKeys.add(entryContentKey(entry));
+      return;
+    }
+
+    supabaseClient.from('entries').delete().eq('id', id)
+      .then(({ error }) => {
+        if (error) {
+          console.warn('Delete sync failed:', error);
+          setSyncStatus('offline — deletion not yet synced', 'status-error');
+        }
+      });
+  }
+
+  function timeToMinutes(t) {
+    const m = t.match(/(\d+):(\d+):(\d+)\s*(AM|PM)?/i);
+    if (!m) return 0;
+    let h = parseInt(m[1], 10);
+    const min = parseInt(m[2], 10);
+    const sec = parseInt(m[3], 10);
+    const ampm = (m[4] || '').toUpperCase();
+    if (ampm === 'PM' && h !== 12) h += 12;
+    if (ampm === 'AM' && h === 12) h = 0;
+    return h * 3600 + min * 60 + sec;
+  }
+
+  function todayDateString() {
+    return new Date().toLocaleDateString('en-CA');
+  }
+
+  function getTodayEntries() {
+    const today = todayDateString();
+    return entries.filter(e => e.date === today);
+  }
+
+  function getViewingEntries() {
+    return entries.filter(e => e.date === viewingDate);
+  }
+
+  function isViewingToday() {
+    return viewingDate === todayDateString();
+  }
+
+  function updateDateNavUI() {
+    const today = todayDateString();
+    const label = document.getElementById('dateNavLabel');
+    const dateInput = document.getElementById('viewingDateInput');
+    const todayBtn = document.getElementById('dateNavTodayBtn');
+    const banner = document.getElementById('historyBanner');
+
+    dateInput.value = viewingDate;
+
+    if (viewingDate === today) {
+      label.textContent = 'Today';
+      label.classList.remove('is-history');
+      todayBtn.style.display = 'none';
+      banner.style.display = 'none';
+    } else {
+      const d = new Date(viewingDate + 'T00:00:00');
+      label.textContent = d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+      label.classList.add('is-history');
+      todayBtn.style.display = 'inline-block';
+      banner.style.display = 'flex';
+    }
+
+    setActionControlsEnabled(viewingDate === today);
+  }
+
+  function setActionControlsEnabled(enabled) {
+    const ids = ['taskActionBtn', 'downtimeActionBtn', 'lunchActionBtn', 'sessionToggleBtn',
+                 'reopenSessionBtn', 'taskDescInput', 'targetDurationInput',
+                 'noteInput', 'downtimeCategorySelect', 'operatorSelect'];
+    ids.forEach(id => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      if (el.tagName === 'BUTTON') {
+        el.disabled = !enabled;
+        el.style.opacity = enabled ? '1' : '0.5';
+        el.style.cursor = enabled ? 'pointer' : 'not-allowed';
+      } else {
+        // Don't force-enable inputs that are intentionally locked mid-task/downtime
+        if (enabled) {
+          // leave existing lock state (task/downtime in progress) alone
+        } else {
+          el.disabled = true;
+        }
+      }
+    });
+    // task +/- counter buttons
+    document.querySelectorAll('.task-decr, .task-incr').forEach(btn => {
+      btn.disabled = !enabled || taskInProgress;
+      btn.style.opacity = (!enabled || taskInProgress) ? '0.5' : '1';
+    });
+  }
+
+  function navigateDate(deltaDays) {
+    const d = new Date(viewingDate + 'T00:00:00');
+    d.setDate(d.getDate() + deltaDays);
+    viewingDate = d.toLocaleDateString('en-CA');
+    followingToday = (viewingDate === todayDateString());
+    refreshForDateChange();
+  }
+
+  function handleDateInputChange() {
+    const dateInput = document.getElementById('viewingDateInput');
+    if (!dateInput.value) return;
+    viewingDate = dateInput.value;
+    followingToday = (viewingDate === todayDateString());
+    refreshForDateChange();
+  }
+
+  function jumpToToday() {
+    viewingDate = todayDateString();
+    followingToday = true;
+    refreshForDateChange();
+  }
+
+  function refreshForDateChange() {
+    updateDateNavUI();
+    renderLog();
+    updateTotals();
+  }
+
+  function formatDateShort(dateStr) {
+    if (!dateStr) return '—';
+    const d = new Date(dateStr + 'T00:00:00');
+    if (isNaN(d.getTime())) return dateStr;
+    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  }
+
+  function entrySortValue(e) {
+    const timeSec = timeToMinutes(e.timestamp);
+    if (e.date) {
+      const d = new Date(e.date + 'T00:00:00');
+      if (!isNaN(d.getTime())) {
+        const daysSinceEpoch = Math.floor(d.getTime() / 86400000);
+        return daysSinceEpoch * 100000 + timeSec;
+      }
+    }
+    return timeSec; // legacy entries without a date fall back to time-only ordering
+  }
+
+  function escapeAttr(str) {
+    return str.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+  }
+
+  function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+  }
+
+  function extractReason(note) {
+    // Notes look like "Downtime ended (5m 7s) — restarting the stack"
+    // Pull out anything after the dash as the human-readable reason.
+    const parts = (note || '').split('—');
+    if (parts.length > 1) return parts.slice(1).join('—').trim();
+    return '';
+  }
+
+  function computeDurationLog(sortedEntries, regexWord, entryType) {
+    entryType = entryType || regexWord;
+    const events = [];
+    let openStart = null, openOperator = null, openStartNote = null;
+    sortedEntries.forEach(e => {
+      if ((e.type || '').toLowerCase() !== entryType.toLowerCase()) return;
+      const note = e.note || '';
+      if (new RegExp(regexWord + '\\s+started', 'i').test(note)) {
+        openStart = e.timestamp;
+        openOperator = e.operator || '';
+        openStartNote = note;
+      } else if (new RegExp(regexWord + '\\s+(ended|completed)', 'i').test(note)) {
+        const dm = note.match(/\((\d+)m\s+(\d+)s\)/);
+        const duration = dm ? `${dm[1]}m ${dm[2]}s` : '?';
+        const reason = extractReason(note) || extractReason(openStartNote || '');
+        events.push({ operator: e.operator || openOperator || '', duration, reason: reason || 'No reason logged' });
+        openStart = null; openOperator = null; openStartNote = null;
+      }
+    });
+    return events;
+  }
+
+  function secondsToClockLabel(seconds) {
+    let s = ((seconds % 86400) + 86400) % 86400; // normalize
+    let h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const sec = s % 60;
+    const ampm = h >= 12 ? 'PM' : 'AM';
+    h = h % 12; if (h === 0) h = 12;
+    return `${h}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')} ${ampm}`;
+  }
+
+  function computeOccupiedIntervals(segmentEntries) {
+    const intervals = [];
+    const openTaskStarts = {};
+    let openDowntime = null, openLunch = null;
+    segmentEntries.forEach(e => {
+      const note = e.note || '';
+      let m = note.match(/task\s+(\d+)\s+started/i);
+      if (m) { openTaskStarts[m[1]] = timeToMinutes(e.timestamp); return; }
+      m = note.match(/task\s+(\d+)\s+(completed|compled)/i);
+      if (m) {
+        const s = openTaskStarts[m[1]];
+        if (s != null) intervals.push([s, timeToMinutes(e.timestamp)]);
+        delete openTaskStarts[m[1]];
+        return;
+      }
+      if (/downtime\s+started/i.test(note)) { openDowntime = timeToMinutes(e.timestamp); return; }
+      if (/downtime\s+(ended|completed)/i.test(note)) {
+        if (openDowntime != null) intervals.push([openDowntime, timeToMinutes(e.timestamp)]);
+        openDowntime = null;
+        return;
+      }
+      if (/lunch\s+started/i.test(note)) { openLunch = timeToMinutes(e.timestamp); return; }
+      if (/lunch\s+(ended|completed)/i.test(note)) {
+        if (openLunch != null) intervals.push([openLunch, timeToMinutes(e.timestamp)]);
+        openLunch = null;
+        return;
+      }
+    });
+    return intervals.sort((a, b) => a[0] - b[0]);
+  }
+
+  function computeUnaccountedGaps(segmentEntries) {
+    if (segmentEntries.length === 0) return [];
+    const startSec = timeToMinutes(segmentEntries[0].timestamp);
+    const endSec = timeToMinutes(segmentEntries[segmentEntries.length - 1].timestamp);
+    const occupied = computeOccupiedIntervals(segmentEntries);
+
+    const merged = [];
+    occupied.forEach(iv => {
+      if (merged.length && iv[0] <= merged[merged.length - 1][1]) {
+        merged[merged.length - 1][1] = Math.max(merged[merged.length - 1][1], iv[1]);
+      } else {
+        merged.push([iv[0], iv[1]]);
+      }
+    });
+
+    const gaps = [];
+    let cursor = startSec;
+    merged.forEach(iv => {
+      if (iv[0] > cursor) gaps.push([cursor, iv[0]]);
+      cursor = Math.max(cursor, iv[1]);
+    });
+    if (endSec > cursor) gaps.push([cursor, endSec]);
+
+    // Ignore sub-minute noise — only real gaps matter for this report
+    return gaps
+      .filter(g => (g[1] - g[0]) >= 60)
+      .map(g => ({ startLabel: secondsToClockLabel(g[0]), endLabel: secondsToClockLabel(g[1]), seconds: g[1] - g[0] }));
+  }
+
+  function computeSessionSummaries(sortedEntries) {
+    const segments = [];
+    let segStart = 0;
+    sortedEntries.forEach((e, idx) => {
+      if (e.type === 'Session' && /new session started/i.test(e.note || '')) {
+        segments.push(sortedEntries.slice(segStart, idx));
+        segStart = idx;
+      }
+    });
+    segments.push(sortedEntries.slice(segStart));
+
+    return segments.filter(s => s.length > 0).map((seg, i) => {
+      const startTs = seg[0].timestamp;
+      const lastTs = seg[seg.length - 1].timestamp;
+      const isLast = (i === segments.length - 1);
+      const startSec = timeToMinutes(startTs);
+      const lastSec = timeToMinutes(lastTs);
+      let rawSpan = lastSec - startSec;
+      if (rawSpan < 0) rawSpan += 24 * 3600;
+      const lunchSecs = computeCategorySecondsInSegment(seg, 'lunch');
+      const downtimeSecs = computeCategorySecondsInSegment(seg, 'downtime');
+
+      let withDowntime = rawSpan - lunchSecs; // session span excludes lunch, but includes downtime
+      if (withDowntime < 0) withDowntime = 0;
+      let withoutDowntime = withDowntime - downtimeSecs;
+      if (withoutDowntime < 0) withoutDowntime = 0;
+
+      const operators = [...new Set(seg.map(e => e.operator).filter(Boolean))];
+      return {
+        number: i + 1,
+        operators: operators.join(', ') || '—',
+        start: startTs,
+        end: isLast ? (sessionEnded ? lastTs : 'ongoing') : lastTs,
+        durationWithDowntimeSeconds: withDowntime,
+        durationWithoutDowntimeSeconds: withoutDowntime,
+        downtimeSeconds: downtimeSecs,
+        durationWithDowntime: formatDuration(withDowntime),
+        durationWithoutDowntime: formatDuration(withoutDowntime),
+        downtimeDuration: formatDuration(downtimeSecs),
+        gaps: (function() { return computeUnaccountedGaps(seg); })(),
+        get unaccountedSeconds() { return this.gaps.reduce((sum, g) => sum + g.seconds, 0); }
+      };
+    });
+  }
+
+  function computeDowntimeByCategory(sortedEntries) {
+    const totals = {};
+    let openCategory = null;
+    sortedEntries.forEach(e => {
+      if (e.type !== 'Downtime') return;
+      const note = e.note || '';
+      if (/downtime\s+started/i.test(note)) {
+        openCategory = e.category || 'Unspecified';
+      } else if (/downtime\s+(ended|completed)/i.test(note)) {
+        const category = e.category || openCategory || 'Unspecified';
+        const dur = (typeof e.durationSeconds === 'number') ? e.durationSeconds : 0;
+        totals[category] = (totals[category] || 0) + dur;
+        openCategory = null;
+      }
+    });
+    return Object.entries(totals)
+      .map(([category, seconds]) => ({ category, seconds, duration: formatDuration(seconds) }))
+      .sort((a, b) => b.seconds - a.seconds);
+  }
+
+  function computeOperatorStats(sortedEntries) {
+    const stats = {};
+    const openTaskStarts = {};
+    const openDowntimeStarts = {};
+    sortedEntries.forEach(e => {
+      const op = e.operator || 'Unknown';
+      if (!stats[op]) stats[op] = { active: 0, downtime: 0 };
+      const note = e.note || '';
+      let m = note.match(/task\s+(\d+)\s+started/i);
+      if (m) { openTaskStarts[m[1]] = { sec: timeToMinutes(e.timestamp), op }; return; }
+      m = note.match(/task\s+(\d+)\s+(completed|compled)/i);
+      if (m) {
+        const started = openTaskStarts[m[1]];
+        if (started) {
+          const dur = (typeof e.durationSeconds === 'number') ? e.durationSeconds : Math.max(0, timeToMinutes(e.timestamp) - started.sec);
+          stats[started.op].active += dur;
+        }
+        delete openTaskStarts[m[1]];
+        return;
+      }
+      if (/downtime\s+started/i.test(note)) { openDowntimeStarts.current = { sec: timeToMinutes(e.timestamp), op }; return; }
+      if (/downtime\s+(ended|completed)/i.test(note)) {
+        const started = openDowntimeStarts.current;
+        if (started) {
+          const dur = (typeof e.durationSeconds === 'number') ? e.durationSeconds : Math.max(0, timeToMinutes(e.timestamp) - started.sec);
+          stats[started.op].downtime += dur;
+        }
+        openDowntimeStarts.current = null;
+        return;
+      }
+    });
+    return Object.entries(stats).map(([operator, v]) => {
+      const total = v.active + v.downtime;
+      const pct = total > 0 ? Math.round((v.downtime / total) * 100) : 0;
+      return { operator, active: formatDuration(v.active), downtime: formatDuration(v.downtime), downtimePct: pct };
+    }).sort((a, b) => b.downtimePct - a.downtimePct);
+  }
+
+  function computeDowntimeByHour(sortedEntries) {
+    const byHour = {};
+    let openStart = null;
+    sortedEntries.forEach(e => {
+      if (e.type !== 'Downtime') return;
+      const note = e.note || '';
+      if (/downtime\s+started/i.test(note)) {
+        openStart = timeToMinutes(e.timestamp);
+      } else if (/downtime\s+(ended|completed)/i.test(note)) {
+        if (openStart != null) {
+          const dur = (typeof e.durationSeconds === 'number') ? e.durationSeconds : Math.max(0, timeToMinutes(e.timestamp) - openStart);
+          const hour = Math.floor(openStart / 3600);
+          byHour[hour] = (byHour[hour] || 0) + dur;
+        }
+        openStart = null;
+      }
+    });
+    return Object.entries(byHour)
+      .map(([hour, seconds]) => {
+        const h = parseInt(hour, 10);
+        const ampm = h >= 12 ? 'PM' : 'AM';
+        const display = h % 12 === 0 ? 12 : h % 12;
+        return { hourLabel: `${display}:00 ${ampm}`, seconds, duration: formatDuration(seconds) };
+      })
+      .sort((a, b) => b.seconds - a.seconds);
+  }
+
+  function escapeHtmlText(str) {
+    const div = document.createElement('div');
+    div.textContent = str || '';
+    return div.innerHTML;
+  }
+
+  function generateSummaryDoc() {
+    const viewEntries = getViewingEntries();
+    if (viewEntries.length === 0) {
+      showStatus(`Nothing to summarize for ${formatDateShort(viewingDate)}`);
+      return;
+    }
+    const sorted = viewEntries.slice().sort((a, b) => (entrySortValue(a) - entrySortValue(b)) || (a.seq - b.seq));
+    const operators = [...new Set(sorted.map(e => e.operator).filter(Boolean))];
+    const tasksCompleted = document.getElementById('totalTasksDisplay').textContent;
+    const activeTime = document.getElementById('totalActiveDisplay').textContent;
+    const downtimeTime = document.getElementById('totalDowntimeDisplay').textContent;
+    const lunchTime = document.getElementById('totalLunchDisplay').textContent;
+    const deadTime = document.getElementById('totalDeadTimeDisplay') ? document.getElementById('totalDeadTimeDisplay').textContent : '0m 0s';
+
+    const sessionSummaries = computeSessionSummaries(sorted);
+    const downtimeLog = computeDurationLog(sorted, 'downtime');
+    const lunchLog = computeDurationLog(sorted, 'lunch');
+    const deadTimeLog = computeDurationLog(sorted, 'dead time', 'DeadTime');
+    const downtimeByCategory = computeDowntimeByCategory(sorted);
+    const operatorStats = computeOperatorStats(sorted);
+    const downtimeByHour = computeDowntimeByHour(sorted);
+    const totalUnaccountedSeconds = sessionSummaries.reduce((sum, s) => sum + s.unaccountedSeconds, 0);
+    const totalUnaccounted = formatDuration(totalUnaccountedSeconds);
+
+    const totalWithDowntimeSeconds = sessionSummaries.reduce((sum, s) => sum + s.durationWithDowntimeSeconds, 0);
+    const totalWithoutDowntimeSeconds = sessionSummaries.reduce((sum, s) => sum + s.durationWithoutDowntimeSeconds, 0);
+    const totalSessionWithDowntime = formatDuration(totalWithDowntimeSeconds);
+    const totalSessionWithoutDowntime = formatDuration(totalWithoutDowntimeSeconds);
+
+    const dateStr = new Date(viewingDate + 'T00:00:00').toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+    const summaryFilename = `robot_use_summary_${viewingDate}.html`;
+
+    const html = `
+<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Robot Use Summary — ${dateStr}</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 800px; margin: 40px auto; padding: 0 24px; color: #111827; line-height: 1.5; }
+  h1 { color: #00211e; margin-bottom: 4px; }
+  .subtitle { color: #6b7280; margin-top: 0; margin-bottom: 28px; }
+  h2 { color: #00211e; border-bottom: 2px solid #e5e7eb; padding-bottom: 6px; margin-top: 36px; }
+  table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+  th { background: #00211e; color: white; text-align: left; padding: 10px 12px; font-size: 13px; }
+  td { padding: 10px 12px; border-bottom: 1px solid #e5e7eb; font-size: 14px; }
+  tr:nth-child(even) td { background: #f8fafc; }
+  .stats { display: flex; gap: 16px; margin: 20px 0; flex-wrap: wrap; }
+  .stat-box { background: #e6fffa; border-radius: 10px; padding: 14px 18px; flex: 1; min-width: 130px; text-align: center; }
+  .stat-value { font-size: 24px; font-weight: 700; color: #00211e; }
+  .stat-label { font-size: 12px; color: #475569; margin-top: 4px; }
+  .no-print { margin: 24px 0; }
+  button { background: #00211e; color: white; border: none; padding: 10px 20px; border-radius: 8px; font-size: 14px; cursor: pointer; font-weight: 600; }
+  @media print { .no-print { display: none; } }
+</style></head><body>
+  <h1>Robot Use Summary</h1>
+  <p class="subtitle">${dateStr} — Operators: ${operators.join(', ') || 'N/A'}</p>
+
+  <div class="no-print">
+    <button onclick="window.print()">🖨 Print / Save as PDF</button>
+    <button onclick="downloadSummary()">⬇ Download as File</button>
+  </div>
+  <script>
+    function downloadSummary() {
+      const blob = new Blob([document.documentElement.outerHTML], { type: 'text/html' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = '${summaryFilename}';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }
+  <\/script>
+
+  <div class="stats">
+    <div class="stat-box"><div class="stat-value">${totalSessionWithDowntime}</div><div class="stat-label">Total Session Time (incl. downtime)</div></div>
+    <div class="stat-box"><div class="stat-value">${totalSessionWithoutDowntime}</div><div class="stat-label">Total Session Time (excl. downtime)</div></div>
+    <div class="stat-box"><div class="stat-value">${downtimeTime}</div><div class="stat-label">Total Downtime</div></div>
+  </div>
+  <div class="stats">
+    <div class="stat-box"><div class="stat-value">${tasksCompleted}</div><div class="stat-label">Tasks Completed</div></div>
+    <div class="stat-box"><div class="stat-value">${activeTime}</div><div class="stat-label">Total Active Time</div></div>
+    <div class="stat-box"><div class="stat-value">${lunchTime}</div><div class="stat-label">Total Lunch</div></div>
+    <div class="stat-box"><div class="stat-value">${deadTime}</div><div class="stat-label">Total Dead Time</div></div>
+    <div class="stat-box"><div class="stat-value">${totalUnaccounted}</div><div class="stat-label">Unaccounted Time</div></div>
+  </div>
+
+  <h2>Session Breakdown</h2>
+  <table>
+    <tr><th>Session</th><th>Operator(s)</th><th>Start</th><th>End</th><th>Time (incl. downtime)</th><th>Time (excl. downtime)</th><th>Downtime</th><th>Unaccounted</th></tr>
+    ${sessionSummaries.map(s => `<tr><td>Session ${s.number}</td><td>${escapeHtmlText(s.operators)}</td><td>${s.start}</td><td>${s.end}</td><td>${s.durationWithDowntime}</td><td>${s.durationWithoutDowntime}</td><td>${s.downtimeDuration}</td><td>${formatDuration(s.unaccountedSeconds)}</td></tr>`).join('')}
+  </table>
+
+  ${sessionSummaries.some(s => s.gaps.length > 0) ? `<h2>Unaccounted Time Gaps</h2>
+  <p style="color:#6b7280;font-size:13px;">Time between logged events that wasn't recorded as active work, downtime, or lunch.</p>
+  <table>
+    <tr><th>Session</th><th>From</th><th>To</th><th>Duration</th></tr>
+    ${sessionSummaries.flatMap(s => s.gaps.map(g => `<tr><td>Session ${s.number}</td><td>${g.startLabel}</td><td>${g.endLabel}</td><td>${formatDuration(g.seconds)}</td></tr>`)).join('')}
+  </table>` : ''}
+
+  <h2>Downtime Log</h2>
+  ${downtimeLog.length ? `<table>
+    <tr><th>Operator</th><th>Duration</th><th>Reason</th></tr>
+    ${downtimeLog.map(d => `<tr><td>${escapeHtmlText(d.operator)}</td><td>${escapeHtmlText(d.duration)}</td><td>${escapeHtmlText(d.reason)}</td></tr>`).join('')}
+  </table>` : '<p>No downtime recorded.</p>'}
+
+  ${downtimeByCategory.length ? `<h2>Top Downtime Causes</h2>
+  <table>
+    <tr><th>Category</th><th>Total Time</th><th>% of Downtime</th></tr>
+    ${downtimeByCategory.map(c => `<tr><td>${escapeHtmlText(c.category)}</td><td>${c.duration}</td><td>${downtimeByCategory.reduce((s,x)=>s+x.seconds,0) > 0 ? Math.round(c.seconds / downtimeByCategory.reduce((s,x)=>s+x.seconds,0) * 100) : 0}%</td></tr>`).join('')}
+  </table>` : ''}
+
+  ${operatorStats.length > 1 ? `<h2>Per-Operator Breakdown</h2>
+  <table>
+    <tr><th>Operator</th><th>Active Time</th><th>Downtime</th><th>Downtime %</th></tr>
+    ${operatorStats.map(o => `<tr><td>${escapeHtmlText(o.operator)}</td><td>${o.active}</td><td>${o.downtime}</td><td>${o.downtimePct}%</td></tr>`).join('')}
+  </table>` : ''}
+
+  ${downtimeByHour.length ? `<h2>Downtime by Time of Day</h2>
+  <table>
+    <tr><th>Hour</th><th>Total Downtime</th></tr>
+    ${downtimeByHour.map(h => `<tr><td>${h.hourLabel}</td><td>${h.duration}</td></tr>`).join('')}
+  </table>` : ''}
+
+  ${lunchLog.length ? `<h2>Lunch Log</h2>
+  <table>
+    <tr><th>Operator</th><th>Duration</th></tr>
+    ${lunchLog.map(l => `<tr><td>${escapeHtmlText(l.operator)}</td><td>${escapeHtmlText(l.duration)}</td></tr>`).join('')}
+  </table>` : ''}
+
+  ${deadTimeLog.length ? `<h2>Dead Time Log</h2>
+  <p style="color:#6b7280;font-size:13px;">Time between sessions, before an operator is on headset. Separate from downtime — not a fault or delay, just time the robot wasn't staffed.</p>
+  <table>
+    <tr><th>Operator</th><th>Duration</th></tr>
+    ${deadTimeLog.map(d => `<tr><td>${escapeHtmlText(d.operator)}</td><td>${escapeHtmlText(d.duration)}</td></tr>`).join('')}
+  </table>` : ''}
+
+</body></html>`;
+
+    const win = window.open('', '_blank');
+    if (!win) {
+      showStatus('Pop-up blocked — allow pop-ups to view the summary');
+      return;
+    }
+    win.document.open();
+    win.document.write(html);
+    win.document.close();
+    showStatus('Summary generated in a new tab');
+    uploadToDrive(summaryFilename, html, 'text/html');
+  }
+
+  function exportCSV() {
+    if (entries.length === 0) { showStatus('Nothing to export yet'); return; }
+    let csv = 'Date,Time,Type,Operator,Category,Note\n';
+    entries.forEach(e => {
+      csv += `"${e.date || ''}","${e.timestamp}","${e.type}","${(e.operator || '').replace(/"/g, '""')}","${(e.category || '').replace(/"/g, '""')}","${(e.note || '').replace(/"/g, '""')}"\n`;
+    });
+    const filename = buildDatedFilename('robot_use_log', 'csv');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showStatus('CSV exported');
+    uploadToDrive(filename, csv, 'text/csv');
+  }
+
+  function buildDatedFilename(base, ext) {
+    const dates = [...new Set(entries.map(e => e.date).filter(Boolean))].sort();
+    if (dates.length === 0) return `${base}_${todayDateString()}.${ext}`;
+    if (dates.length === 1) return `${base}_${dates[0]}.${ext}`;
+    return `${base}_${dates[0]}_to_${dates[dates.length - 1]}.${ext}`;
+  }
+
+  function importCSV(event) {
+    const files = Array.from(event.target.files || []);
+    if (files.length === 0) return;
+
+    let filesProcessed = 0;
+    let totalImported = 0;
+
+    function processFile(file) {
+      return new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          try {
+            const rows = parseCSV(e.target.result);
+            if (rows.length < 2) { resolve(0); return; }
+            const header = rows[0].map(h => h.trim().toLowerCase());
+            const timeIdx = header.indexOf('time');
+            const typeIdx = header.indexOf('type');
+            const noteIdx = header.indexOf('note');
+            const operatorIdx = header.indexOf('operator');
+            const dateIdx = header.indexOf('date');
+            const categoryIdx = header.indexOf('category');
+            if (timeIdx === -1 || typeIdx === -1) { resolve(0); return; }
+
+            let imported = 0;
+            for (let i = 1; i < rows.length; i++) {
+              const row = rows[i];
+              if (!row[timeIdx]) continue;
+              const note = noteIdx !== -1 ? (row[noteIdx] || '') : '';
+              const operator = operatorIdx !== -1 ? (row[operatorIdx] || '') : '';
+              // Legacy CSVs (pre-date-tracking) have no Date column — fall back
+              // to today's date so old imports still sort sensibly.
+              const rowDate = (dateIdx !== -1 && row[dateIdx]) ? row[dateIdx] : new Date().toLocaleDateString('en-CA');
+              const category = categoryIdx !== -1 ? (row[categoryIdx] || null) : null;
+              entries.push({
+                id: `local_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+                seq: nextSeq++,
+                date: rowDate,
+                timestamp: row[timeIdx],
+                type: row[typeIdx] || 'Active',
+                note: note,
+                operator: operator,
+                category: category,
+                durationSeconds: parseDurationFromNote(note)
+              });
+              imported++;
+            }
+            resolve(imported);
+          } catch (err) {
+            resolve(0);
+          }
+        };
+        reader.readAsText(file);
+      });
+    }
+
+    Promise.all(files.map(processFile)).then((counts) => {
+      totalImported = counts.reduce((a, b) => a + b, 0);
+      dedupeEntries();
+      renderLog();
+      inferTaskNumberFromEntries();
+      updateTotals();
+
+      // Pick up the operator from the most recent entry, if one was recorded
+      const sorted = entries.slice().sort((a, b) => (entrySortValue(a) - entrySortValue(b)) || (a.seq - b.seq));
+      const lastWithOperator = [...sorted].reverse().find(e => e.operator);
+      if (lastWithOperator) {
+        currentOperator = lastWithOperator.operator;
+        syncOperatorSelect();
+      }
+
+      currentTaskDescription = '';
+      const descInput = document.getElementById('taskDescInput');
+      descInput.value = '';
+      descInput.disabled = taskInProgress;
+
+      // Show today's view after an import so the live state is visible
+      viewingDate = todayDateString();
+      followingToday = true;
+      updateDateNavUI();
+      renderLog();
+
+      // Push newly-imported rows (still carrying temp local_ ids) to Supabase
+      // so the rest of the team sees them too.
+      if (supabaseClient) {
+        const toInsert = entries.filter(e => String(e.id).startsWith('local_'));
+        if (toInsert.length > 0) {
+          supabaseClient.from('entries').insert(toInsert.map(entryToRow)).select()
+            .then(({ data, error }) => {
+              if (error) {
+                console.warn('Import sync failed:', error);
+                setSyncStatus('offline — imported entries not yet synced', 'status-error');
+                return;
+              }
+              // Reconcile each imported entry with its real Supabase id by
+              // matching content, since insert order isn't guaranteed.
+              (data || []).forEach(row => {
+                const match = entries.find(e =>
+                  String(e.id).startsWith('local_') &&
+                  e.date === row.entry_date && e.timestamp === row.entry_time &&
+                  e.type === row.type && e.note === row.note &&
+                  (e.operator || '') === (row.operator || '')
+                );
+                if (match) match.id = row.id;
+              });
+            });
+        }
+      }
+
+      const fileWord = files.length === 1 ? 'file' : 'files';
+      showStatus(`Combined ${totalImported} entr${totalImported === 1 ? 'y' : 'ies'} from ${files.length} ${fileWord}`);
+      event.target.value = '';
+    });
+  }
+
+  function dedupeEntries() {
+    // Remove exact duplicate rows (same date + timestamp + type + note) that
+    // can happen when the same export gets imported more than once.
+    const seen = new Set();
+    entries = entries.filter(e => {
+      const key = `${e.date || ''}|${e.timestamp}|${e.type}|${e.note}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  function parseCSV(text) {
+    const rows = [];
+    let row = [], field = '', inQuotes = false;
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i], next = text[i + 1];
+      if (inQuotes) {
+        if (c === '"' && next === '"') { field += '"'; i++; }
+        else if (c === '"') { inQuotes = false; }
+        else { field += c; }
+      } else {
+        if (c === '"') { inQuotes = true; }
+        else if (c === ',') { row.push(field); field = ''; }
+        else if (c === '\n') { row.push(field); rows.push(row); row = []; field = ''; }
+        else if (c === '\r') { /* skip */ }
+        else { field += c; }
+      }
+    }
+    if (field.length > 0 || row.length > 0) { row.push(field); rows.push(row); }
+    return rows.filter(r => r.length > 1 || (r.length === 1 && r[0] !== ''));
+  }
+
+  function parseDurationFromNote(note) {
+    const m = (note || '').match(/\((\d+)m\s+(\d+)s\)/);
+    if (!m) return null;
+    return parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
+  }
+
+  function inferTaskNumberFromEntries() {
+    let maxCompleted = 0;
+    let maxStarted = 0;
+    let startedEntry = null;
+    getTodayEntries().forEach(e => {
+      const note = e.note || '';
+      const m = note.match(/task\s+(\d+)\s+(started|completed|compled)/i);
+      if (!m) return;
+      const num = parseInt(m[1], 10);
+      const kind = m[2].toLowerCase();
+      if (kind === 'started') {
+        if (num >= maxStarted) { maxStarted = num; startedEntry = e; }
+      } else {
+        maxCompleted = Math.max(maxCompleted, num);
+      }
+    });
+    if (maxStarted > maxCompleted) {
+      currentTaskNumber = maxStarted;
+      taskInProgress = true;
+      taskStartTimestamp = startedEntry ? parseTimestampToDate(startedEntry.timestamp) : new Date();
+    } else if (maxCompleted > 0 || maxStarted > 0) {
+      currentTaskNumber = Math.max(maxCompleted, maxStarted) + 1;
+      taskInProgress = false;
+      taskStartTimestamp = null;
+    }
+
+    // Determine whether the most recent Session-type entry was an end or a
+    // fresh start, so the End Session button reflects the imported state.
+    const sessionEvents = getTodayEntries()
+      .filter(e => e.type === 'Session')
+      .slice()
+      .sort((a, b) => (entrySortValue(a) - entrySortValue(b)) || (a.seq - b.seq));
+    if (sessionEvents.length > 0) {
+      const last = sessionEvents[sessionEvents.length - 1];
+      sessionEnded = /ended/i.test(last.note || '');
+
+      // The session's own note carries the type and optional Policy #,
+      // e.g. "New session started — Sim Data Collect (Policy #3)"
+      const note = last.note || '';
+      const policyMatch = note.match(/\(Policy #(\d+)\)\s*$/);
+      currentPolicyNumber = !sessionEnded && policyMatch ? parseInt(policyMatch[1], 10) : null;
+      const noteWithoutPolicy = note.replace(/\s*\(Policy #\d+\)\s*$/, '');
+      const typeMatch = noteWithoutPolicy.match(/—\s*(.+)$/);
+      mainSessionType = !sessionEnded && typeMatch ? typeMatch[1].trim() : '';
+
+      const typeSelect = document.getElementById('mainSessionTypeSelect');
+      const otherInput = document.getElementById('mainSessionOtherInput');
+      const policyInput = document.getElementById('policyNumberInput');
+      if (typeSelect) {
+        const isKnownOption = Array.from(typeSelect.options).some(o => o.value === mainSessionType);
+        typeSelect.value = !sessionEnded ? (isKnownOption ? mainSessionType : 'Other') : '';
+        typeSelect.disabled = !sessionEnded;
+        if (!sessionEnded && !isKnownOption && otherInput) {
+          otherInput.value = mainSessionType;
+          otherInput.style.display = 'block';
+          otherInput.disabled = true;
+        }
+      }
+      if (policyInput) {
+        policyInput.value = currentPolicyNumber || '';
+        policyInput.disabled = !sessionEnded;
+      }
+    }
+
+    // Determine whether the most recent Downtime entry left downtime running
+    const downtimeEvents = getTodayEntries()
+      .filter(e => e.type === 'Downtime')
+      .slice()
+      .sort((a, b) => (entrySortValue(a) - entrySortValue(b)) || (a.seq - b.seq));
+    if (downtimeEvents.length > 0) {
+      const last = downtimeEvents[downtimeEvents.length - 1];
+      downtimeInProgress = /started/i.test(last.note || '');
+      downtimeStartTimestamp = downtimeInProgress ? parseTimestampToDate(last.timestamp) : null;
+    }
+
+    const lunchEvents = getTodayEntries()
+      .filter(e => e.type === 'Lunch')
+      .slice()
+      .sort((a, b) => (entrySortValue(a) - entrySortValue(b)) || (a.seq - b.seq));
+    if (lunchEvents.length > 0) {
+      const last = lunchEvents[lunchEvents.length - 1];
+      lunchInProgress = /started/i.test(last.note || '');
+      lunchStartTimestamp = lunchInProgress ? parseTimestampToDate(last.timestamp) : null;
+    }
+
+    const deadTimeEvents = getTodayEntries()
+      .filter(e => e.type === 'DeadTime')
+      .slice()
+      .sort((a, b) => (entrySortValue(a) - entrySortValue(b)) || (a.seq - b.seq));
+    if (deadTimeEvents.length > 0) {
+      const last = deadTimeEvents[deadTimeEvents.length - 1];
+      deadTimeInProgress = /started/i.test(last.note || '');
+      deadTimeStartTimestamp = deadTimeInProgress ? parseTimestampToDate(last.timestamp) : null;
+    }
+
+    updateSessionButton();
+    updateTaskButton();
+    updateDowntimeButton();
+    updateLunchButton();
+  }
+
+  function parseTimestampToDate(t) {
+    const seconds = timeToMinutes(t);
+    const d = new Date();
+    d.setHours(Math.floor(seconds / 3600), Math.floor((seconds % 3600) / 60), seconds % 60, 0);
+    return d;
+  }
+
+  function performReset(statusMessage, resetOperator) {
+    // Resets today's LIVE tracking counters only. Never deletes any entries —
+    // history is preserved and stays browsable via the date navigator.
+    currentTaskNumber = 1;
+    taskInProgress = false;
+    taskStartTimestamp = null;
+    currentTaskDescription = '';
+    downtimeInProgress = false;
+    downtimeStartTimestamp = null;
+    autoDowntimeActive = false;
+    currentDowntimeCategory = '';
+    lunchInProgress = false;
+    lunchStartTimestamp = null;
+    deadTimeInProgress = false;
+    deadTimeStartTimestamp = null;
+    sessionEnded = true;
+    lastActivityTime = new Date();
+    currentTargetMinutes = null;
+    if (resetOperator) {
+      currentOperator = 'Ajar';
+      syncOperatorSelect();
+    }
+    const descInput = document.getElementById('taskDescInput');
+    descInput.value = '';
+    descInput.disabled = false;
+    const targetInput = document.getElementById('targetDurationInput');
+    targetInput.value = '';
+    targetInput.disabled = false;
+    document.getElementById('taskProgressWrap').style.display = 'none';
+
+    const categorySelect = document.getElementById('downtimeCategorySelect');
+    categorySelect.value = '';
+    categorySelect.disabled = false;
+    updateSessionButton();
+    updateTaskButton();
+    updateDowntimeButton();
+    updateLunchButton();
+    renderLog();
+    updateTotals();
+    showStatus(statusMessage);
+  }
+
+  function startNewDay() {
+    // The date navigator already separates days automatically — this button
+    // is now just a manual counter reset for today, with an optional export
+    // first. Nothing is ever deleted.
+    viewingDate = todayDateString();
+    followingToday = true;
+    updateDateNavUI();
+    const todayEntries = getTodayEntries();
+    if (todayEntries.length === 0) {
+      showStatus('Starting fresh — counters reset');
+      performReset('Counters reset for today', true);
+      return;
+    }
+    if (confirm("Export today's log, then reset today's counters for a fresh start? (Nothing is deleted — you can still browse today via the date picker.)")) {
+      exportCSV();
+      performReset('Exported. Counters reset for today', true);
+    }
+  }
+
+  function clearLog() {
+    // Scoped to whatever day is currently being viewed — never touches other days.
+    const viewEntries = getViewingEntries();
+    if (viewEntries.length === 0) return;
+    const label = isViewingToday() ? "today's" : `${formatDateShort(viewingDate)}'s`;
+    if (confirm(`Clear all ${viewEntries.length} entries for ${label} log? This cannot be undone for the whole team. Other days are not affected.`)) {
+      const dateBeingCleared = viewingDate;
+      entries = entries.filter(e => e.date !== dateBeingCleared);
+      if (isViewingToday()) {
+        performReset('Log cleared for today');
+      } else {
+        renderLog();
+        updateTotals();
+        showStatus(`Cleared ${label} log`);
+      }
+      if (supabaseClient) {
+        supabaseClient.from('entries').delete().eq('entry_date', dateBeingCleared)
+          .then(({ error }) => {
+            if (error) {
+              console.warn('Delete sync failed:', error);
+              setSyncStatus('offline — deletion not yet synced', 'status-error');
+            }
+          });
+      }
+    }
+  }
+
+  function handleMainSessionTypeChange() {
+    const select = document.getElementById('mainSessionTypeSelect');
+    const otherInput = document.getElementById('mainSessionOtherInput');
+    otherInput.style.display = (select.value === 'Other') ? 'block' : 'none';
+  }
+
+  let currentPolicyNumber = null;
+
+  function updateWorkControlsGating() {
+    // Task Timer / Downtime / Lunch only make sense once a session is
+    // actively running — this is the enforcement of "order of operations"
+    // for day-to-day work logging.
+    const enabled = !sessionEnded;
+    ['taskActionBtn', 'downtimeActionBtn', 'lunchActionBtn'].forEach(id => {
+      const btn = document.getElementById(id);
+      if (!btn) return;
+      // Don't override a button that's mid-action (already running) —
+      // only gate the ability to START something new.
+      const isMidAction = (id === 'taskActionBtn' && taskInProgress) ||
+                           (id === 'downtimeActionBtn' && downtimeInProgress) ||
+                           (id === 'lunchActionBtn' && lunchInProgress);
+      if (isMidAction) return;
+      btn.disabled = !enabled;
+      btn.style.opacity = enabled ? '1' : '0.5';
+      btn.style.cursor = enabled ? 'pointer' : 'not-allowed';
+    });
+  }
+
+  function toggleSession() {
+    resetIdleTimer();
+    if (sessionEnded) {
+      // Starting a session: pick a type first, just like Main Session used to.
+      const typeSelect = document.getElementById('mainSessionTypeSelect');
+      const otherInput = document.getElementById('mainSessionOtherInput');
+      const policyInput = document.getElementById('policyNumberInput');
+      const chosen = (typeSelect.value === 'Other') ? otherInput.value.trim() : typeSelect.value;
+      if (!chosen) {
+        showStatus('⚠ Pick a session type before starting');
+        typeSelect.focus();
+        return;
+      }
+      mainSessionType = chosen;
+      const policyVal = parseInt(policyInput.value, 10);
+      currentPolicyNumber = (policyVal > 0) ? policyVal : null;
+      const policySuffix = currentPolicyNumber ? ` (Policy #${currentPolicyNumber})` : '';
+
+      closeDeadTime();
+      logEntry('Session', `New session started — ${mainSessionType}${policySuffix}`);
+      sessionEnded = false;
+      currentTaskNumber += taskInProgress ? 0 : 1;
+      taskInProgress = false;
+      taskStartTimestamp = null;
+      typeSelect.disabled = true;
+      otherInput.disabled = true;
+      policyInput.disabled = true;
+      updateTaskButton();
+      showStatus('Session started');
+    } else {
+      // Ending a session: don't allow it while a task, downtime, or lunch
+      // is still open underneath it — that would orphan data instead of
+      // cleanly closing it out.
+      if (taskInProgress) {
+        showStatus('⚠ Stop the Task Timer before ending the session');
+        return;
+      }
+      if (downtimeInProgress) {
+        showStatus('⚠ End Downtime before ending the session');
+        return;
+      }
+      if (lunchInProgress) {
+        showStatus('⚠ End Lunch before ending the session');
+        return;
+      }
+      const policySuffix = currentPolicyNumber ? ` (Policy #${currentPolicyNumber})` : '';
+      logEntry('Session', `Session ended — ${mainSessionType}${policySuffix}`);
+      sessionEnded = true;
+      // Keep mainSessionType/currentPolicyNumber remembered in case this
+      // gets reopened — only cleared when a genuinely new type is chosen.
+      const typeSelect = document.getElementById('mainSessionTypeSelect');
+      const otherInput = document.getElementById('mainSessionOtherInput');
+      const policyInput = document.getElementById('policyNumberInput');
+      typeSelect.value = '';
+      typeSelect.disabled = false;
+      otherInput.value = '';
+      otherInput.style.display = 'none';
+      otherInput.disabled = false;
+      policyInput.value = '';
+      policyInput.disabled = false;
+      showStatus('Session ended');
+      startDeadTime();
+    }
+    updateSessionButton();
+    updateTotals();
+  }
+
+  function startDeadTime() {
+    if (deadTimeInProgress) return;
+    deadTimeInProgress = true;
+    deadTimeStartTimestamp = new Date();
+    logEntry('DeadTime', 'Dead time started');
+  }
+
+  function closeDeadTime() {
+    if (!deadTimeInProgress || !deadTimeStartTimestamp) return;
+    const durationSeconds = Math.round((new Date() - deadTimeStartTimestamp) / 1000);
+    logEntry('DeadTime', `Dead time ended (${formatDuration(durationSeconds)})`, durationSeconds);
+    deadTimeInProgress = false;
+    deadTimeStartTimestamp = null;
+  }
+
+  function updateSessionButton() {
+    const btn = document.getElementById('sessionToggleBtn');
+    const reopenBtn = document.getElementById('reopenSessionBtn');
+    const status = document.getElementById('mainSessionStatus');
+    if (sessionEnded) {
+      btn.textContent = '🔄 Start New Session';
+      btn.classList.add('ended');
+      reopenBtn.style.display = 'block';
+      if (status) {
+        status.textContent = 'No session started yet';
+        status.classList.remove('active');
+      }
+    } else {
+      btn.textContent = '⏹ End Session';
+      btn.classList.remove('ended');
+      reopenBtn.style.display = 'none';
+      if (status) {
+        status.textContent = currentPolicyNumber
+          ? `Active: ${mainSessionType} (Policy #${currentPolicyNumber})`
+          : `Active: ${mainSessionType}`;
+        status.classList.add('active');
+      }
+    }
+    updateWorkControlsGating();
+  }
+
+  function reopenSession() {
+    resetIdleTimer();
+    closeDeadTime();
+    const policySuffix = currentPolicyNumber ? ` (Policy #${currentPolicyNumber})` : '';
+    logEntry('Session', `Session reopened — ${mainSessionType}${policySuffix}`);
+    sessionEnded = false;
+    // Restore the remembered type/policy display and re-lock the fields,
+    // since we're resuming the same session, not starting a fresh one.
+    const typeSelect = document.getElementById('mainSessionTypeSelect');
+    const otherInput = document.getElementById('mainSessionOtherInput');
+    const policyInput = document.getElementById('policyNumberInput');
+    const isKnownOption = Array.from(typeSelect.options).some(o => o.value === mainSessionType);
+    typeSelect.value = isKnownOption ? mainSessionType : 'Other';
+    typeSelect.disabled = true;
+    if (!isKnownOption) {
+      otherInput.value = mainSessionType;
+      otherInput.style.display = 'block';
+    }
+    otherInput.disabled = true;
+    policyInput.value = currentPolicyNumber || '';
+    policyInput.disabled = true;
+    updateSessionButton();
+    updateTotals();
+    saveToStorage();
+    showStatus('Session reopened');
+  }
+
+  // ---- Page mode: two genuinely separate HTML files sharing this one
+  // app.js and style.css, instead of one file with a URL parameter. Each
+  // HTML file sets window.PAGE_MODE before loading this script:
+  //   index.html            -> window.PAGE_MODE = 'data'    (Sim/UC/Other)
+  //   policy-training.html  -> window.PAGE_MODE = 'policy'  (Policy Training/Other)
+  const pageMode = (window.PAGE_MODE === 'policy') ? 'policy' : 'data';
+
+  function applyPageMode() {
+    const typeSelect = document.getElementById('mainSessionTypeSelect');
+    const navLink = document.getElementById('pageNavLink');
+    if (!typeSelect || !navLink) return;
+
+    Array.from(typeSelect.options).forEach(opt => {
+      if (opt.classList.contains('opt-data')) {
+        opt.style.display = (pageMode === 'data') ? '' : 'none';
+      } else if (opt.classList.contains('opt-policy')) {
+        opt.style.display = (pageMode === 'policy') ? '' : 'none';
+      }
+    });
+
+    if (pageMode === 'policy') {
+      navLink.textContent = '📊 Go to Data Collection';
+      navLink.href = 'index.html';
+    } else {
+      navLink.textContent = '🎯 Go to Policy Training';
+      navLink.href = 'policy-training.html';
+    }
+  }
+
+  viewingDate = todayDateString();
+  followingToday = true;
+  loadPrefs();
+
+  let authClient = null;
+
+  function getAuthClient() {
+    if (!authClient) authClient = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+    return authClient;
+  }
+
+  async function attemptLogin() {
+    const input = document.getElementById('passcodeInput');
+    const errorEl = document.getElementById('loginError');
+    const btn = document.getElementById('passcodeSubmitBtn');
+    const passcode = input.value;
+    if (!passcode) {
+      errorEl.textContent = 'Enter the passcode first';
+      return;
+    }
+    btn.disabled = true;
+    btn.textContent = 'Checking…';
+    errorEl.textContent = '';
+
+    try {
+      const client = getAuthClient();
+      const { error } = await client.auth.signInWithPassword({
+        email: SHARED_LOGIN_EMAIL,
+        password: passcode
+      });
+      if (error) {
+        errorEl.textContent = 'Wrong passcode — try again';
+        btn.disabled = false;
+        btn.textContent = 'Unlock';
+        return;
+      }
+      unlockApp();
+    } catch (err) {
+      errorEl.textContent = 'Connection error — try again';
+      btn.disabled = false;
+      btn.textContent = 'Unlock';
+    }
+  }
+
+  function unlockApp() {
+    document.getElementById('loginOverlay').style.display = 'none';
+    document.getElementById('mainWrap').style.display = 'block';
+    initApp();
+  }
+
+  document.getElementById('passcodeInput').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') attemptLogin();
+  });
+
+  async function initApp() {
+    applyPageMode();
+    supabaseClient = getAuthClient();
+    const hasData = await initSupabaseSync();
+
+    // Now that entries are loaded from the shared database, figure out
+    // today's live tracking state (task/downtime/lunch/session) from them.
+    inferTaskNumberFromEntries();
+
+    updateTaskButton();
+    updateDowntimeButton();
+    updateLunchButton();
+    updateSessionButton();
+    updateDateNavUI();
+    updateTotals();
+    renderLog();
+    syncOperatorSelect();
+    const descInputInit = document.getElementById('taskDescInput');
+    descInputInit.value = currentTaskDescription || '';
+    descInputInit.disabled = taskInProgress;
+    const targetInputInit = document.getElementById('targetDurationInput');
+    targetInputInit.disabled = taskInProgress;
+    if (taskInProgress) document.getElementById('taskProgressWrap').style.display = 'block';
+    const categorySelectInit = document.getElementById('downtimeCategorySelect');
+    categorySelectInit.value = downtimeInProgress ? (currentDowntimeCategory || '') : '';
+    categorySelectInit.disabled = downtimeInProgress;
+    lastActivityTime = new Date();
+
+    if (hasData) {
+      showStatus(`Loaded ${entries.length} entr${entries.length === 1 ? 'y' : 'ies'} from the shared team log`);
+    }
+  }
+
+  // On page load, check for an already-signed-in session (from a previous
+  // visit in this browser) so the team doesn't need to re-enter the
+  // passcode every single time — only once per browser, until it's cleared.
+  (async function checkExistingSession() {
+    if (typeof supabase === 'undefined') {
+      document.getElementById('loginError').textContent = 'Sync library failed to load — check your connection';
+      return;
+    }
+    const client = getAuthClient();
+    const { data } = await client.auth.getSession();
+    if (data && data.session) {
+      unlockApp();
+    }
+    // Otherwise, the login overlay just stays visible, waiting for input.
+  })();
