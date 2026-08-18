@@ -980,6 +980,8 @@ let entries = [];
         <td class="note-cell">${e.note ? escapeHtml(e.note) : '<span style="color:var(--muted)">—</span>'}</td>
         <td>
           <button class="edit-btn" onclick="startEdit('${e.id}')">Edit</button>
+          ${(e.type === 'Active' && /task\s+\d+\s+(completed|compled)/i.test(e.note || ''))
+            ? `<button class="reclassify-btn" onclick="startReclassify('${e.id}')">→Downtime</button>` : ''}
           <button class="delete-btn" onclick="deleteEntry('${e.id}')">Delete</button>
         </td>
       </tr>
@@ -1022,6 +1024,94 @@ let entries = [];
           });
       }
     }
+    renderLog();
+    updateTotals();
+  }
+
+  // Finds the matching "Task N started" entry for a given "Task N completed"
+  // entry, so both halves of the pair can be reclassified together and stay
+  // internally consistent for all the duration/category calculations that
+  // scan for matching start/end pairs.
+  function findPairedStartEntry(entry) {
+    const m = (entry.note || '').match(/task\s+(\d+)\s+(completed|compled)/i);
+    if (!m) return null;
+    const taskNum = m[1];
+    const sorted = entries.slice().sort((a, b) => (entrySortValue(a) - entrySortValue(b)) || (a.seq - b.seq));
+    const idx = sorted.findIndex(e => e.id === entry.id);
+    if (idx === -1) return null;
+    const startPattern = new RegExp(`task\\s+${taskNum}\\s+started`, 'i');
+    for (let i = idx - 1; i >= 0; i--) {
+      if (sorted[i].type === 'Active' && startPattern.test(sorted[i].note || '')) {
+        return sorted[i];
+      }
+    }
+    return null;
+  }
+
+  function startReclassify(id) {
+    resetIdleTimer();
+    const entry = entries.find(x => x.id === id);
+    if (!entry) return;
+    const row = document.querySelector(`tr[data-id="${id}"]`);
+    const noteCell = row.querySelector('.note-cell');
+    const reasonOptionsHtml = document.getElementById('downtimeCategorySelect').innerHTML;
+
+    noteCell.innerHTML = `
+      <div style="font-size:12px;color:var(--muted);margin-bottom:4px;">Reclassify this task as downtime:</div>
+      <select class="reclassify-reason-select">${reasonOptionsHtml}</select>
+    `;
+    const actionCell = row.querySelector('.reclassify-btn').parentElement;
+    actionCell.innerHTML = `<button class="save-btn" onclick="saveReclassify('${id}')">Save</button>`;
+  }
+
+  function saveReclassify(id) {
+    resetIdleTimer();
+    const entry = entries.find(x => x.id === id);
+    if (!entry) return;
+    const row = document.querySelector(`tr[data-id="${id}"]`);
+    const reasonSelect = row.querySelector('.reclassify-reason-select');
+    const reason = reasonSelect ? reasonSelect.value : '';
+
+    if (!reason) {
+      showStatus('⚠ Pick a downtime reason before saving');
+      return;
+    }
+
+    const pairEntry = findPairedStartEntry(entry);
+    const durationText = (typeof entry.durationSeconds === 'number') ? formatDuration(entry.durationSeconds) : null;
+
+    entry.type = 'Downtime';
+    entry.category = reason;
+    entry.note = durationText
+      ? `Downtime ended (${durationText}) — ${reason}`
+      : `Downtime ended — ${reason}`;
+
+    const updates = [{ id: entry.id, type: entry.type, category: entry.category, note: entry.note }];
+
+    if (pairEntry) {
+      pairEntry.type = 'Downtime';
+      pairEntry.category = reason;
+      pairEntry.note = `Downtime started — ${reason}`;
+      updates.push({ id: pairEntry.id, type: pairEntry.type, category: pairEntry.category, note: pairEntry.note });
+    }
+
+    showStatus(pairEntry
+      ? `Reclassified as Downtime (${reason}) — both start and end updated`
+      : `Reclassified as Downtime (${reason}) — matching start entry not found, only this row updated`);
+
+    if (supabaseClient) {
+      updates.forEach(u => {
+        if (String(u.id).startsWith('local_')) return;
+        supabaseClient.from('entries').update({ type: u.type, category: u.category, note: u.note }).eq('id', u.id)
+          .then(({ error }) => {
+            if (error) {
+              console.warn('Reclassify sync failed:', error);
+              setSyncStatus('offline — reclassify not yet synced', 'status-error');
+            }
+          });
+      });
+    }
+
     renderLog();
     updateTotals();
   }

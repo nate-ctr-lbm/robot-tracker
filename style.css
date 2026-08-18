@@ -651,7 +651,7 @@
   .tag-deadtime { background: rgba(138,163,159,0.2); color: var(--muted); }
   .tag-downtime { background: rgba(249,115,22,0.15); color: var(--accent2); }
   .empty { color: var(--muted); text-align: center; padding: 24px; font-size: 13px; }
-  .edit-btn, .save-btn, .delete-btn {
+  .edit-btn, .save-btn, .delete-btn, .reclassify-btn {
     background: transparent;
     border: 1px solid var(--border);
     color: var(--muted);
@@ -665,6 +665,8 @@
   .save-btn { color: var(--accent); border-color: var(--accent); }
   .edit-btn:hover { color: var(--text); border-color: var(--text); }
   .delete-btn { color: var(--accent2); }
+  .reclassify-btn { color: var(--lunch-signal); }
+  .reclassify-btn:hover { border-color: var(--lunch-signal); }
   .delete-btn:hover { border-color: var(--accent2); }
   .edit-input {
     width: 100%;
