@@ -262,6 +262,29 @@
     </div>
   </section>
 
+  <section class="card">
+    <div class="section-label">Export Specific Sessions</div>
+    <p class="session-export-hint">
+      Export just the runs you actually want — filter by type, or check off individual sessions by hand. Not scoped to today; this looks across your whole history.
+    </p>
+    <div class="target-row">
+      <label for="sessionFilterTypeSelect">Quick-select by type</label>
+      <select id="sessionFilterTypeSelect" onchange="quickSelectSessionsByType()">
+        <option value="">— Choose a type —</option>
+        <option value="Sim Data Collect">Sim Data Collect</option>
+        <option value="UC Data Collect">UC Data Collect</option>
+        <option value="Policy Training">Policy Training</option>
+        <option value="__all__">All sessions</option>
+        <option value="__none__">Clear selection</option>
+      </select>
+    </div>
+    <div id="sessionExportList" class="session-export-list"></div>
+    <div class="buttons" style="margin-top:10px;">
+      <button class="btn-active" id="exportSelectedSessionsBtn" style="grid-column: 1 / -1;" onclick="exportSelectedSessions()">⬇ Export Selected Sessions (0)</button>
+    </div>
+  </section>
+
+
   <div class="fine-print">
     Built for personal / small-team use tracking robot operating sessions. This tool is not an official Walden Robotics product, does not represent company policy or endorsed reporting, and is not intended for public distribution or use outside this team.
   </div>

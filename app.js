@@ -954,6 +954,7 @@ let entries = [];
   }
 
   function renderLog() {
+    renderSessionExportList();
     const body = document.getElementById('logBody');
     const empty = document.getElementById('emptyState');
     const table = document.getElementById('logTable');
@@ -1697,6 +1698,143 @@ let entries = [];
     if (dates.length === 0) return `${base}_${todayDateString()}.${ext}`;
     if (dates.length === 1) return `${base}_${dates[0]}.${ext}`;
     return `${base}_${dates[0]}_to_${dates[dates.length - 1]}.${ext}`;
+  }
+
+  // Enumerates every session across the FULL history (not just one day),
+  // used by the "Export Specific Sessions" picker so someone can filter by
+  // type or hand-pick exactly which runs to include in an export.
+  function computeAllSessions() {
+    const sorted = entries.slice().sort((a, b) => (entrySortValue(a) - entrySortValue(b)) || (a.seq - b.seq));
+    const segments = [];
+    let segStart = 0;
+    sorted.forEach((e, idx) => {
+      if (e.type === 'Session' && /new session started/i.test(e.note || '')) {
+        if (idx > segStart) segments.push(sorted.slice(segStart, idx));
+        segStart = idx;
+      }
+    });
+    segments.push(sorted.slice(segStart));
+
+    return segments.filter(seg => seg.length > 0).map((seg, i) => {
+      const startEntry = seg.find(e => e.type === 'Session' && /new session started/i.test(e.note || ''));
+      const endEntry = [...seg].reverse().find(e => e.type === 'Session' && /^session ended/i.test(e.note || ''));
+
+      let type = 'Unknown';
+      let policyNumber = null;
+      if (startEntry) {
+        const note = startEntry.note || '';
+        const policyMatch = note.match(/\(Policy #(\d+)\)\s*$/);
+        policyNumber = policyMatch ? policyMatch[1] : null;
+        const noteWithoutPolicy = note.replace(/\s*\(Policy #\d+\)\s*$/, '');
+        const typeMatch = noteWithoutPolicy.match(/—\s*(.+)$/);
+        type = typeMatch ? typeMatch[1].trim() : 'Unknown';
+      }
+
+      const operators = [...new Set(seg.map(e => e.operator).filter(Boolean))];
+
+      return {
+        id: `session_${i}`,
+        index: i + 1,
+        type: type,
+        policyNumber: policyNumber,
+        operators: operators.join(', ') || '—',
+        startDate: seg[0].date,
+        startTime: seg[0].timestamp,
+        endDate: seg[seg.length - 1].date,
+        endTime: seg[seg.length - 1].timestamp,
+        ongoing: !endEntry,
+        entries: seg
+      };
+    });
+  }
+
+  function renderSessionExportList() {
+    const container = document.getElementById('sessionExportList');
+    if (!container) return;
+    const sessions = computeAllSessions();
+
+    if (sessions.length === 0) {
+      container.innerHTML = '<div class="session-export-empty">No sessions logged yet.</div>';
+      updateSessionExportButtonCount();
+      return;
+    }
+
+    // Preserve whatever's currently checked across re-renders (e.g. after a
+    // realtime update comes in while someone's mid-selection).
+    const previouslyChecked = new Set(
+      Array.from(container.querySelectorAll('input[type="checkbox"]:checked')).map(cb => cb.value)
+    );
+
+    container.innerHTML = sessions.map(s => {
+      const policyText = s.policyNumber ? ` (Policy #${s.policyNumber})` : '';
+      const dateRange = (s.startDate === s.endDate)
+        ? `${formatDateShort(s.startDate)}, ${s.startTime} – ${s.endTime}`
+        : `${formatDateShort(s.startDate)} ${s.startTime} → ${formatDateShort(s.endDate)} ${s.endTime}`;
+      const ongoingTag = s.ongoing ? ' <span style="color:var(--accent2);">(ongoing)</span>' : '';
+      const checked = previouslyChecked.has(s.id) ? 'checked' : '';
+      return `
+        <label class="session-export-row">
+          <input type="checkbox" value="${s.id}" data-type="${escapeAttr(s.type)}" onchange="updateSessionExportButtonCount()" ${checked} />
+          <div>
+            <div class="session-export-row-label">Session ${s.index} — ${escapeHtml(s.type)}${policyText}${ongoingTag}</div>
+            <div class="session-export-row-meta">${dateRange} — ${escapeHtml(s.operators)}</div>
+          </div>
+        </label>
+      `;
+    }).join('');
+    updateSessionExportButtonCount();
+  }
+
+  function quickSelectSessionsByType() {
+    const select = document.getElementById('sessionFilterTypeSelect');
+    const value = select.value;
+    const checkboxes = document.querySelectorAll('#sessionExportList input[type="checkbox"]');
+    if (value === '__none__') {
+      checkboxes.forEach(cb => { cb.checked = false; });
+    } else if (value === '__all__') {
+      checkboxes.forEach(cb => { cb.checked = true; });
+    } else if (value) {
+      checkboxes.forEach(cb => { cb.checked = (cb.dataset.type === value); });
+    }
+    select.value = '';
+    updateSessionExportButtonCount();
+  }
+
+  function updateSessionExportButtonCount() {
+    const checked = document.querySelectorAll('#sessionExportList input[type="checkbox"]:checked');
+    const btn = document.getElementById('exportSelectedSessionsBtn');
+    if (btn) btn.textContent = `⬇ Export Selected Sessions (${checked.length})`;
+  }
+
+  function exportSelectedSessions() {
+    const checked = Array.from(document.querySelectorAll('#sessionExportList input[type="checkbox"]:checked'));
+    if (checked.length === 0) {
+      showStatus('⚠ Check at least one session to export');
+      return;
+    }
+    const sessions = computeAllSessions();
+    const selectedIds = new Set(checked.map(cb => cb.value));
+    const selectedSessions = sessions.filter(s => selectedIds.has(s.id));
+    const selectedEntries = selectedSessions.flatMap(s => s.entries);
+
+    let csv = 'Date,Time,Type,Operator,Category,Note\n';
+    selectedEntries
+      .sort((a, b) => (entrySortValue(a) - entrySortValue(b)) || (a.seq - b.seq))
+      .forEach(e => {
+        csv += `"${e.date || ''}","${e.timestamp}","${e.type}","${(e.operator || '').replace(/"/g, '""')}","${(e.category || '').replace(/"/g, '""')}","${(e.note || '').replace(/"/g, '""')}"\n`;
+      });
+
+    const filename = `robot_use_log_selected_sessions_${selectedSessions.length}.csv`;
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showStatus(`Exported ${selectedSessions.length} session${selectedSessions.length === 1 ? '' : 's'}`);
   }
 
   function importCSV(event) {
