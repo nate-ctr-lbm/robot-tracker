@@ -66,28 +66,43 @@
       </div>
   </section>
 
-  <section class="card">
+<section class="card">
     <div class="section-label-row">
-      <div class="section-label">Session</div>
+      <div class="section-label">Bookings</div>
       <a href="#" class="page-nav-link" id="pageNavLink"></a>
     </div>
-    <select id="mainSessionTypeSelect" onchange="handleMainSessionTypeChange()">
-      <option value="">Select a type before starting</option>
-      <option value="Sim Data Collect" class="opt-data">Sim Data Collect</option>
-      <option value="UC Data Collect" class="opt-data">UC Data Collect</option>
-      <option value="Policy Training" class="opt-policy">Policy Training</option>
-      <option value="Other">Other...</option>
-    </select>
-    <input type="text" id="mainSessionOtherInput" placeholder="Describe the type" style="display:none;" />
-    <div class="target-row">
-      <label for="policyNumberInput">Policy #</label>
-      <input type="number" id="policyNumberInput" min="1" placeholder="e.g. 1, 2, 3" />
-      <span class="target-unit">(optional)</span>
+
+    <div class="my-booking-status" id="myBookingStatus">You're not attached to a booking yet.</div>
+    <div class="buttons" id="endBookingRow" style="display:none; margin-bottom:14px;">
+      <button class="btn-session" style="grid-column: 1 / -1;" onclick="endBooking()">⏹ End This Booking</button>
     </div>
-    <div class="main-session-status" id="mainSessionStatus">No session started yet</div>
-    <div class="session-btn-row">
-      <button class="btn-session" id="sessionToggleBtn" onclick="toggleSession()">▶ Start Session</button>
-      <button class="btn-session-secondary" id="reopenSessionBtn" onclick="reopenSession()" style="display:none;">↩ Reopen Session</button>
+
+    <div class="active-bookings-header">Active Bookings Right Now</div>
+    <div id="activeBookingsList" class="active-bookings-list"></div>
+
+    <div class="start-booking-form" id="startBookingForm">
+      <div class="start-booking-header">Start a New Booking</div>
+      <select id="mainSessionTypeSelect" onchange="handleMainSessionTypeChange()">
+        <option value="">Select a type before starting</option>
+        <option value="Sim Data Collect" class="opt-data">Sim Data Collect</option>
+        <option value="UC Data Collect" class="opt-data">UC Data Collect</option>
+        <option value="Policy Training" class="opt-policy">Policy Training</option>
+        <option value="Other">Other...</option>
+      </select>
+      <input type="text" id="mainSessionOtherInput" placeholder="Describe the type" style="display:none;" />
+      <div class="target-row" id="ucNumberRow" style="display:none;">
+        <label for="ucNumberInput">UC #</label>
+        <input type="number" id="ucNumberInput" min="1" placeholder="e.g. 2, 5" />
+        <span class="target-unit">(required for UC Data Collect)</span>
+      </div>
+      <div class="target-row" id="policyNumberRow">
+        <label for="policyNumberInput">Policy #</label>
+        <input type="number" id="policyNumberInput" min="1" placeholder="e.g. 1, 2, 3" />
+        <span class="target-unit">(optional)</span>
+      </div>
+      <div class="session-btn-row">
+        <button class="btn-session" id="sessionToggleBtn" onclick="startOrJoinBooking()">▶ Start Booking</button>
+      </div>
     </div>
   </section>
 

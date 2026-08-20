@@ -83,7 +83,8 @@ let entries = [];
       operator: row.operator || '',
       category: row.category || null,
       note: row.note || '',
-      durationSeconds: (typeof row.duration_seconds === 'number') ? row.duration_seconds : null
+      durationSeconds: (typeof row.duration_seconds === 'number') ? row.duration_seconds : null,
+      bookingId: row.booking_id || null
     };
   }
 
@@ -95,7 +96,8 @@ let entries = [];
       operator: entry.operator || null,
       category: entry.category || null,
       note: entry.note || '',
-      duration_seconds: (typeof entry.durationSeconds === 'number') ? entry.durationSeconds : null
+      duration_seconds: (typeof entry.durationSeconds === 'number') ? entry.durationSeconds : null,
+      booking_id: entry.bookingId || null
     };
   }
 
@@ -699,6 +701,11 @@ let entries = [];
 
   let clockPaused = false;
   let sessionEnded = true;
+  // Which booking THIS device is currently attached to — personal, not
+  // synced. Multiple devices can each be attached to their own (or the
+  // same, if they joined) booking at the same time.
+  let myBookingId = null;
+  const MY_BOOKING_KEY = 'walden_robot_tracker_my_booking_id';
   let clockIntervalId = null;
 
   function tick() {
@@ -768,8 +775,8 @@ let entries = [];
     wrap.style.display = 'block'; // always visible now — content adapts to state
 
     if (sessionEnded) {
-      document.getElementById('sessionProgressOperator').textContent = 'No active session';
-      document.getElementById('sessionProgressElapsed').textContent = 'Tap "Start New Session" to begin';
+      document.getElementById('sessionProgressOperator').textContent = 'No active booking';
+      document.getElementById('sessionProgressElapsed').textContent = 'Start or join a booking to begin';
       document.getElementById('segActive').style.width = '0%';
       document.getElementById('segDowntime').style.width = '0%';
       document.getElementById('segLunch').style.width = '0%';
@@ -899,7 +906,7 @@ let entries = [];
     saveToStorage();
   }
 
-  function logEntry(type, note, durationSeconds, category) {
+  function logEntry(type, note, durationSeconds, category, bookingIdOverride) {
     const now = new Date();
     const entry = {
       id: `local_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
@@ -910,7 +917,8 @@ let entries = [];
       note: note || '',
       operator: currentOperator || '',
       category: category || null,
-      durationSeconds: (typeof durationSeconds === 'number') ? durationSeconds : null
+      durationSeconds: (typeof durationSeconds === 'number') ? durationSeconds : null,
+      bookingId: (bookingIdOverride !== undefined) ? bookingIdOverride : myBookingId
     };
     entries.push(entry);
     renderLog();
@@ -955,6 +963,7 @@ let entries = [];
 
   function renderLog() {
     renderSessionExportList();
+    renderActiveBookingsList();
     const body = document.getElementById('logBody');
     const empty = document.getElementById('emptyState');
     const table = document.getElementById('logTable');
@@ -1205,7 +1214,7 @@ let entries = [];
   }
 
   function setActionControlsEnabled(enabled) {
-    const ids = ['taskActionBtn', 'downtimeActionBtn', 'lunchActionBtn', 'sessionToggleBtn',
+    const ids = ['sessionToggleBtn',
                  'reopenSessionBtn', 'taskDescInput', 'targetDurationInput',
                  'noteInput', 'downtimeCategorySelect', 'operatorSelect'];
     ids.forEach(id => {
@@ -1229,6 +1238,10 @@ let entries = [];
       btn.disabled = !enabled || taskInProgress;
       btn.style.opacity = (!enabled || taskInProgress) ? '0.5' : '1';
     });
+    // Task Timer / Downtime / Lunch have their OWN gate (booking status) —
+    // re-derive them here too so history-mode and booking-status combine
+    // correctly instead of one silently overriding the other.
+    updateWorkControlsGating();
   }
 
   function navigateDate(deltaDays) {
@@ -1704,48 +1717,102 @@ let entries = [];
   // used by the "Export Specific Sessions" picker so someone can filter by
   // type or hand-pick exactly which runs to include in an export.
   function computeAllSessions() {
-    const sorted = entries.slice().sort((a, b) => (entrySortValue(a) - entrySortValue(b)) || (a.seq - b.seq));
-    const segments = [];
-    let segStart = 0;
-    sorted.forEach((e, idx) => {
-      if (e.type === 'Session' && /new session started/i.test(e.note || '')) {
-        if (idx > segStart) segments.push(sorted.slice(segStart, idx));
-        segStart = idx;
+    // Group by bookingId rather than splitting chronologically — with
+    // concurrent bookings, entries from different bookings interleave in
+    // the raw timeline, so a simple chronological split would incorrectly
+    // mix them together.
+    const byBooking = {};
+    const noBookingId = []; // entries logged before booking_id existed
+    entries.forEach(e => {
+      if (e.type === 'DeadTime') return; // deliberately has no booking — not a session
+      if (e.bookingId) {
+        if (!byBooking[e.bookingId]) byBooking[e.bookingId] = [];
+        byBooking[e.bookingId].push(e);
+      } else {
+        noBookingId.push(e);
       }
     });
-    segments.push(sorted.slice(segStart));
 
-    return segments.filter(seg => seg.length > 0).map((seg, i) => {
+    const sessions = Object.keys(byBooking).map((bookingId, i) => {
+      const seg = byBooking[bookingId].sort((a, b) => (entrySortValue(a) - entrySortValue(b)) || (a.seq - b.seq));
       const startEntry = seg.find(e => e.type === 'Session' && /new session started/i.test(e.note || ''));
       const endEntry = [...seg].reverse().find(e => e.type === 'Session' && /^session ended/i.test(e.note || ''));
 
       let type = 'Unknown';
       let policyNumber = null;
+      let ucNumber = null;
       if (startEntry) {
         const note = startEntry.note || '';
         const policyMatch = note.match(/\(Policy #(\d+)\)\s*$/);
+        const ucMatch = note.match(/\(UC #(\d+)\)\s*$/);
         policyNumber = policyMatch ? policyMatch[1] : null;
-        const noteWithoutPolicy = note.replace(/\s*\(Policy #\d+\)\s*$/, '');
-        const typeMatch = noteWithoutPolicy.match(/—\s*(.+)$/);
+        ucNumber = ucMatch ? ucMatch[1] : null;
+        const noteClean = note.replace(/\s*\(Policy #\d+\)\s*$/, '').replace(/\s*\(UC #\d+\)\s*$/, '');
+        const typeMatch = noteClean.match(/—\s*(.+)$/);
         type = typeMatch ? typeMatch[1].trim() : 'Unknown';
       }
 
       const operators = [...new Set(seg.map(e => e.operator).filter(Boolean))];
+      const sorted = seg.slice().sort((a, b) => (entrySortValue(a) - entrySortValue(b)) || (a.seq - b.seq));
 
       return {
-        id: `session_${i}`,
+        id: bookingId,
         index: i + 1,
         type: type,
-        policyNumber: policyNumber,
+        policyNumber: ucNumber ? null : policyNumber,
+        ucNumber: ucNumber,
         operators: operators.join(', ') || '—',
-        startDate: seg[0].date,
-        startTime: seg[0].timestamp,
-        endDate: seg[seg.length - 1].date,
-        endTime: seg[seg.length - 1].timestamp,
+        startDate: sorted[0].date,
+        startTime: sorted[0].timestamp,
+        endDate: sorted[sorted.length - 1].date,
+        endTime: sorted[sorted.length - 1].timestamp,
         ongoing: !endEntry,
         entries: seg
       };
     });
+
+    // Older entries logged before bookings existed (booking_id is null) —
+    // keep them exportable too, grouped as one legacy "session" per old
+    // chronological-split boundary, so nothing from before this update
+    // becomes invisible to the export picker.
+    if (noBookingId.length > 0) {
+      const sortedLegacy = noBookingId.sort((a, b) => (entrySortValue(a) - entrySortValue(b)) || (a.seq - b.seq));
+      const legacySegments = [];
+      let segStart = 0;
+      sortedLegacy.forEach((e, idx) => {
+        if (e.type === 'Session' && /new session started/i.test(e.note || '')) {
+          if (idx > segStart) legacySegments.push(sortedLegacy.slice(segStart, idx));
+          segStart = idx;
+        }
+      });
+      legacySegments.push(sortedLegacy.slice(segStart));
+
+      legacySegments.filter(seg => seg.length > 0).forEach((seg, i) => {
+        const startEntry = seg.find(e => e.type === 'Session' && /new session started/i.test(e.note || ''));
+        let type = 'Unknown (legacy)';
+        if (startEntry) {
+          const typeMatch = (startEntry.note || '').match(/—\s*(.+)$/);
+          if (typeMatch) type = typeMatch[1].trim() + ' (legacy)';
+        }
+        const operators = [...new Set(seg.map(e => e.operator).filter(Boolean))];
+        sessions.push({
+          id: `legacy_${i}`,
+          index: sessions.length + i + 1,
+          type: type,
+          policyNumber: null,
+          ucNumber: null,
+          operators: operators.join(', ') || '—',
+          startDate: seg[0].date,
+          startTime: seg[0].timestamp,
+          endDate: seg[seg.length - 1].date,
+          endTime: seg[seg.length - 1].timestamp,
+          ongoing: false,
+          entries: seg
+        });
+      });
+    }
+
+    return sessions.sort((a, b) => (entrySortValue({date:a.startDate,timestamp:a.startTime}) - entrySortValue({date:b.startDate,timestamp:b.startTime})));
   }
 
   function renderSessionExportList() {
@@ -1766,7 +1833,7 @@ let entries = [];
     );
 
     container.innerHTML = sessions.map(s => {
-      const policyText = s.policyNumber ? ` (Policy #${s.policyNumber})` : '';
+      const policyText = s.ucNumber ? ` (UC #${s.ucNumber})` : s.policyNumber ? ` (Policy #${s.policyNumber})` : '';
       const dateRange = (s.startDate === s.endDate)
         ? `${formatDateShort(s.startDate)}, ${s.startTime} – ${s.endTime}`
         : `${formatDateShort(s.startDate)} ${s.startTime} → ${formatDateShort(s.endDate)} ${s.endTime}`;
@@ -2016,43 +2083,60 @@ let entries = [];
       taskStartTimestamp = null;
     }
 
-    // Determine whether the most recent Session-type entry was an end or a
-    // fresh start, so the End Session button reflects the imported state.
-    const sessionEvents = getTodayEntries()
-      .filter(e => e.type === 'Session')
-      .slice()
-      .sort((a, b) => (entrySortValue(a) - entrySortValue(b)) || (a.seq - b.seq));
-    if (sessionEvents.length > 0) {
-      const last = sessionEvents[sessionEvents.length - 1];
-      sessionEnded = /ended/i.test(last.note || '');
+    // Restore which booking THIS device was attached to, verify it's still
+    // actually open (someone else might have ended it while we were away),
+    // and derive the live UI state from just that booking's own entries —
+    // never from "whatever the last Session entry anywhere happened to be,"
+    // since multiple concurrent bookings can exist now.
+    let storedBookingId = null;
+    try { storedBookingId = localStorage.getItem(MY_BOOKING_KEY); } catch (err) { /* ignore */ }
 
-      // The session's own note carries the type and optional Policy #,
-      // e.g. "New session started — Sim Data Collect (Policy #3)"
-      const note = last.note || '';
-      const policyMatch = note.match(/\(Policy #(\d+)\)\s*$/);
-      currentPolicyNumber = !sessionEnded && policyMatch ? parseInt(policyMatch[1], 10) : null;
-      const noteWithoutPolicy = note.replace(/\s*\(Policy #\d+\)\s*$/, '');
-      const typeMatch = noteWithoutPolicy.match(/—\s*(.+)$/);
-      mainSessionType = !sessionEnded && typeMatch ? typeMatch[1].trim() : '';
-
-      const typeSelect = document.getElementById('mainSessionTypeSelect');
-      const otherInput = document.getElementById('mainSessionOtherInput');
-      const policyInput = document.getElementById('policyNumberInput');
-      if (typeSelect) {
-        const isKnownOption = Array.from(typeSelect.options).some(o => o.value === mainSessionType);
-        typeSelect.value = !sessionEnded ? (isKnownOption ? mainSessionType : 'Other') : '';
-        typeSelect.disabled = !sessionEnded;
-        if (!sessionEnded && !isKnownOption && otherInput) {
-          otherInput.value = mainSessionType;
-          otherInput.style.display = 'block';
-          otherInput.disabled = true;
-        }
+    if (storedBookingId) {
+      const active = computeActiveBookings();
+      const stillActive = active.find(b => b.bookingId === storedBookingId);
+      if (stillActive) {
+        myBookingId = storedBookingId;
+        mainSessionType = stillActive.type;
+        currentPolicyNumber = stillActive.policyNumber ? parseInt(stillActive.policyNumber, 10) : null;
+        currentUcNumber = stillActive.ucNumber ? parseInt(stillActive.ucNumber, 10) : null;
+        sessionEnded = false;
+      } else {
+        // It was ended (by us or someone else) since we last checked in —
+        // don't keep pointing at a closed booking.
+        try { localStorage.removeItem(MY_BOOKING_KEY); } catch (err) { /* ignore */ }
+        myBookingId = null;
+        sessionEnded = true;
       }
-      if (policyInput) {
-        policyInput.value = currentPolicyNumber || '';
-        policyInput.disabled = !sessionEnded;
+    } else {
+      sessionEnded = true;
+    }
+
+    const typeSelect = document.getElementById('mainSessionTypeSelect');
+    const otherInput = document.getElementById('mainSessionOtherInput');
+    const policyInput = document.getElementById('policyNumberInput');
+    const ucInput = document.getElementById('ucNumberInput');
+    const startBookingForm = document.getElementById('startBookingForm');
+    const endBookingRow = document.getElementById('endBookingRow');
+    if (typeSelect) {
+      const isKnownOption = Array.from(typeSelect.options).some(o => o.value === mainSessionType);
+      typeSelect.value = !sessionEnded ? (isKnownOption ? mainSessionType : 'Other') : '';
+      typeSelect.disabled = !sessionEnded;
+      if (!sessionEnded && !isKnownOption && otherInput) {
+        otherInput.value = mainSessionType;
+        otherInput.style.display = 'block';
+        otherInput.disabled = true;
       }
     }
+    if (policyInput) {
+      policyInput.value = currentPolicyNumber || '';
+      policyInput.disabled = !sessionEnded;
+    }
+    if (ucInput) {
+      ucInput.value = currentUcNumber || '';
+      ucInput.disabled = !sessionEnded;
+    }
+    if (startBookingForm) startBookingForm.style.display = sessionEnded ? 'block' : 'none';
+    if (endBookingRow) endBookingRow.style.display = sessionEnded ? 'none' : 'block';
 
     // Determine whether the most recent Downtime entry left downtime running
     const downtimeEvents = getTodayEntries()
@@ -2113,7 +2197,8 @@ let entries = [];
     lunchStartTimestamp = null;
     deadTimeInProgress = false;
     deadTimeStartTimestamp = null;
-    sessionEnded = true;
+    // Deliberately NOT touching sessionEnded/myBookingId here — resetting
+    // today's task numbering shouldn't kick anyone off an active booking.
     lastActivityTime = new Date();
     currentTargetMinutes = null;
     if (resetOperator) {
@@ -2189,21 +2274,24 @@ let entries = [];
   function handleMainSessionTypeChange() {
     const select = document.getElementById('mainSessionTypeSelect');
     const otherInput = document.getElementById('mainSessionOtherInput');
+    const ucRow = document.getElementById('ucNumberRow');
+    const policyRow = document.getElementById('policyNumberRow');
     otherInput.style.display = (select.value === 'Other') ? 'block' : 'none';
+    ucRow.style.display = (select.value === 'UC Data Collect') ? 'flex' : 'none';
+    policyRow.style.display = (select.value === 'Policy Training') ? 'flex' : 'none';
   }
 
   let currentPolicyNumber = null;
+  let currentUcNumber = null;
 
   function updateWorkControlsGating() {
-    // Task Timer / Downtime / Lunch only make sense once a session is
-    // actively running — this is the enforcement of "order of operations"
-    // for day-to-day work logging.
-    const enabled = !sessionEnded;
+    // Task Timer / Downtime / Lunch only make sense once THIS device is
+    // attached to a booking, AND only while viewing today (not browsing
+    // read-only history) — this is the "order of operations" enforcement.
+    const enabled = !sessionEnded && isViewingToday();
     ['taskActionBtn', 'downtimeActionBtn', 'lunchActionBtn'].forEach(id => {
       const btn = document.getElementById(id);
       if (!btn) return;
-      // Don't override a button that's mid-action (already running) —
-      // only gate the ability to START something new.
       const isMidAction = (id === 'taskActionBtn' && taskInProgress) ||
                            (id === 'downtimeActionBtn' && downtimeInProgress) ||
                            (id === 'lunchActionBtn' && lunchInProgress);
@@ -2214,71 +2302,214 @@ let entries = [];
     });
   }
 
-  function toggleSession() {
-    resetIdleTimer();
-    if (sessionEnded) {
-      // Starting a session: pick a type first, just like Main Session used to.
-      const typeSelect = document.getElementById('mainSessionTypeSelect');
-      const otherInput = document.getElementById('mainSessionOtherInput');
-      const policyInput = document.getElementById('policyNumberInput');
-      const chosen = (typeSelect.value === 'Other') ? otherInput.value.trim() : typeSelect.value;
-      if (!chosen) {
-        showStatus('⚠ Pick a session type before starting');
-        typeSelect.focus();
-        return;
-      }
-      mainSessionType = chosen;
-      const policyVal = parseInt(policyInput.value, 10);
-      currentPolicyNumber = (policyVal > 0) ? policyVal : null;
-      const policySuffix = currentPolicyNumber ? ` (Policy #${currentPolicyNumber})` : '';
+  function generateBookingId() {
+    return `booking_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  }
 
-      closeDeadTime();
-      logEntry('Session', `New session started — ${mainSessionType}${policySuffix}`);
-      sessionEnded = false;
-      currentTaskNumber += taskInProgress ? 0 : 1;
-      taskInProgress = false;
-      taskStartTimestamp = null;
-      typeSelect.disabled = true;
-      otherInput.disabled = true;
-      policyInput.disabled = true;
-      updateTaskButton();
-      showStatus('Session started');
-    } else {
-      // Ending a session: don't allow it while a task, downtime, or lunch
-      // is still open underneath it — that would orphan data instead of
-      // cleanly closing it out.
-      if (taskInProgress) {
-        showStatus('⚠ Stop the Task Timer before ending the session');
-        return;
-      }
-      if (downtimeInProgress) {
-        showStatus('⚠ End Downtime before ending the session');
-        return;
-      }
-      if (lunchInProgress) {
-        showStatus('⚠ End Lunch before ending the session');
-        return;
-      }
-      const policySuffix = currentPolicyNumber ? ` (Policy #${currentPolicyNumber})` : '';
-      logEntry('Session', `Session ended — ${mainSessionType}${policySuffix}`);
-      sessionEnded = true;
-      // Keep mainSessionType/currentPolicyNumber remembered in case this
-      // gets reopened — only cleared when a genuinely new type is chosen.
-      const typeSelect = document.getElementById('mainSessionTypeSelect');
-      const otherInput = document.getElementById('mainSessionOtherInput');
-      const policyInput = document.getElementById('policyNumberInput');
-      typeSelect.value = '';
-      typeSelect.disabled = false;
-      otherInput.value = '';
-      otherInput.style.display = 'none';
-      otherInput.disabled = false;
-      policyInput.value = '';
-      policyInput.disabled = false;
-      showStatus('Session ended');
-      startDeadTime();
+  function bookingIdentifier(type, ucNum, policyNum) {
+    // The thing that makes a booking "the same" for join-vs-start purposes:
+    // for UC Data Collect it's the UC number; for Policy Training it's the
+    // Policy number; anything else is identified by type alone.
+    if (type === 'UC Data Collect') return `UC Data Collect|${ucNum || ''}`;
+    if (type === 'Policy Training') return `Policy Training|${policyNum || ''}`;
+    return `${type}|`;
+  }
+
+  // Scans the FULL history (every device, every day) for bookings that have
+  // started but not yet ended — the live "what's running right now" list.
+  function computeActiveBookings() {
+    const byId = {};
+    entries.forEach(e => {
+      if (e.type !== 'Session' || !e.bookingId) return;
+      if (!byId[e.bookingId]) byId[e.bookingId] = [];
+      byId[e.bookingId].push(e);
+    });
+
+    const active = [];
+    Object.keys(byId).forEach(bookingId => {
+      const evs = byId[bookingId].sort((a, b) => (entrySortValue(a) - entrySortValue(b)) || (a.seq - b.seq));
+      const startEv = evs.find(e => /new session started/i.test(e.note || ''));
+      const endEv = evs.find(e => /^session ended/i.test(e.note || ''));
+      if (!startEv || endEv) return; // no start, or already closed — not active
+
+      const note = startEv.note || '';
+      const policyMatch = note.match(/\(Policy #(\d+)\)\s*$/);
+      const ucMatch = note.match(/\(UC #(\d+)\)\s*$/);
+      let noteClean = note.replace(/\s*\(Policy #\d+\)\s*$/, '').replace(/\s*\(UC #\d+\)\s*$/, '');
+      const typeMatch = noteClean.match(/—\s*(.+)$/);
+
+      const operators = [...new Set(evs.map(e => e.operator).filter(Boolean))];
+
+      active.push({
+        bookingId,
+        type: typeMatch ? typeMatch[1].trim() : 'Unknown',
+        policyNumber: policyMatch ? policyMatch[1] : null,
+        ucNumber: ucMatch ? ucMatch[1] : null,
+        operators: operators.join(', ') || '—',
+        startDate: startEv.date,
+        startTime: startEv.timestamp
+      });
+    });
+    return active;
+  }
+
+  function renderActiveBookingsList() {
+    const container = document.getElementById('activeBookingsList');
+    if (!container) return;
+    const active = computeActiveBookings();
+    if (active.length === 0) {
+      container.innerHTML = '<div class="active-bookings-empty">Nothing running right now.</div>';
+      return;
     }
+    container.innerHTML = active.map(b => {
+      const idText = b.ucNumber ? ` (UC #${b.ucNumber})` : (b.policyNumber ? ` (Policy #${b.policyNumber})` : '');
+      const isMine = b.bookingId === myBookingId;
+      return `
+        <div class="active-booking-row">
+          <div>
+            <div class="active-booking-label">${escapeHtml(b.type)}${idText}${isMine ? ' <span style="color:var(--accent);">— you</span>' : ''}</div>
+            <div class="active-booking-meta">Started ${formatDateShort(b.startDate)} ${b.startTime} — ${escapeHtml(b.operators)}</div>
+          </div>
+          ${isMine ? '' : `<button class="join-booking-btn" onclick="joinBooking('${b.bookingId}')">Join</button>`}
+        </div>
+      `;
+    }).join('');
+  }
+
+  function attachToBooking(bookingId, type, policyNumber, ucNumber) {
+    myBookingId = bookingId;
+    mainSessionType = type;
+    currentPolicyNumber = policyNumber;
+    currentUcNumber = ucNumber;
+    sessionEnded = false;
+    try { localStorage.setItem(MY_BOOKING_KEY, bookingId); } catch (err) { /* ignore */ }
+    closeDeadTime();
+
+    const startBookingForm = document.getElementById('startBookingForm');
+    if (startBookingForm) startBookingForm.style.display = 'none';
+    const endRow = document.getElementById('endBookingRow');
+    if (endRow) endRow.style.display = 'block';
+
     updateSessionButton();
     updateTotals();
+    renderActiveBookingsList();
+  }
+
+  function detachFromMyBooking() {
+    myBookingId = null;
+    mainSessionType = '';
+    currentPolicyNumber = null;
+    currentUcNumber = null;
+    sessionEnded = true;
+    try { localStorage.removeItem(MY_BOOKING_KEY); } catch (err) { /* ignore */ }
+
+    const typeSelect = document.getElementById('mainSessionTypeSelect');
+    const otherInput = document.getElementById('mainSessionOtherInput');
+    const policyInput = document.getElementById('policyNumberInput');
+    const ucInput = document.getElementById('ucNumberInput');
+    if (typeSelect) { typeSelect.value = ''; typeSelect.disabled = false; }
+    if (otherInput) { otherInput.value = ''; otherInput.style.display = 'none'; otherInput.disabled = false; }
+    if (policyInput) { policyInput.value = ''; policyInput.disabled = false; }
+    if (ucInput) { ucInput.value = ''; ucInput.disabled = false; }
+
+    const startBookingForm = document.getElementById('startBookingForm');
+    if (startBookingForm) startBookingForm.style.display = 'block';
+    const endRow = document.getElementById('endBookingRow');
+    if (endRow) endRow.style.display = 'none';
+
+    startDeadTime();
+    updateSessionButton();
+    updateTotals();
+    renderActiveBookingsList();
+  }
+
+  function joinBooking(bookingId) {
+    resetIdleTimer();
+    if (myBookingId) {
+      showStatus('⚠ End your current booking before joining another one');
+      return;
+    }
+    const active = computeActiveBookings();
+    const booking = active.find(b => b.bookingId === bookingId);
+    if (!booking) {
+      showStatus('⚠ That booking is no longer active');
+      renderActiveBookingsList();
+      return;
+    }
+    logEntry('Session', `Joined booking — ${booking.type}${booking.ucNumber ? ` (UC #${booking.ucNumber})` : booking.policyNumber ? ` (Policy #${booking.policyNumber})` : ''}`, null, null, bookingId);
+    attachToBooking(bookingId, booking.type, booking.policyNumber, booking.ucNumber);
+    showStatus(`Joined ${booking.type}`);
+  }
+
+  function startOrJoinBooking() {
+    resetIdleTimer();
+    if (myBookingId) {
+      showStatus('⚠ You are already attached to a booking');
+      return;
+    }
+    const typeSelect = document.getElementById('mainSessionTypeSelect');
+    const otherInput = document.getElementById('mainSessionOtherInput');
+    const policyInput = document.getElementById('policyNumberInput');
+    const ucInput = document.getElementById('ucNumberInput');
+
+    const chosenType = (typeSelect.value === 'Other') ? otherInput.value.trim() : typeSelect.value;
+    if (!chosenType) {
+      showStatus('⚠ Pick a booking type before starting');
+      typeSelect.focus();
+      return;
+    }
+
+    const ucVal = parseInt(ucInput.value, 10);
+    const ucNumber = (ucVal > 0) ? ucVal : null;
+    if (chosenType === 'UC Data Collect' && !ucNumber) {
+      showStatus('⚠ Enter a UC # before starting a UC Data Collect booking');
+      ucInput.focus();
+      return;
+    }
+    const policyVal = parseInt(policyInput.value, 10);
+    const policyNumber = (policyVal > 0) ? policyVal : null;
+
+    // If a booking with this same identity is already running, offer to
+    // join it instead of starting a duplicate, confusing, overlapping one.
+    const identity = bookingIdentifier(chosenType, ucNumber, policyNumber);
+    const existing = computeActiveBookings().find(b =>
+      bookingIdentifier(b.type, b.ucNumber, b.policyNumber) === identity
+    );
+    if (existing) {
+      showStatus(`⚠ That's already running — click "Join" on it in the Active Bookings list above instead`);
+      return;
+    }
+
+    const bookingId = generateBookingId();
+    const idSuffix = ucNumber ? ` (UC #${ucNumber})` : policyNumber ? ` (Policy #${policyNumber})` : '';
+    logEntry('Session', `New session started — ${chosenType}${idSuffix}`, null, null, bookingId);
+    currentTaskNumber += taskInProgress ? 0 : 1;
+    taskInProgress = false;
+    taskStartTimestamp = null;
+    updateTaskButton();
+    attachToBooking(bookingId, chosenType, policyNumber, ucNumber);
+    showStatus('Booking started');
+  }
+
+  function endBooking() {
+    resetIdleTimer();
+    if (!myBookingId) return;
+    if (taskInProgress) {
+      showStatus('⚠ Stop the Task Timer before ending the booking');
+      return;
+    }
+    if (downtimeInProgress) {
+      showStatus('⚠ End Downtime before ending the booking');
+      return;
+    }
+    if (lunchInProgress) {
+      showStatus('⚠ End Lunch before ending the booking');
+      return;
+    }
+    const idSuffix = currentUcNumber ? ` (UC #${currentUcNumber})` : currentPolicyNumber ? ` (Policy #${currentPolicyNumber})` : '';
+    logEntry('Session', `Session ended — ${mainSessionType}${idSuffix}`, null, null, myBookingId);
+    showStatus('Booking ended');
+    detachFromMyBooking();
   }
 
   function startDeadTime() {
@@ -2297,57 +2528,20 @@ let entries = [];
   }
 
   function updateSessionButton() {
-    const btn = document.getElementById('sessionToggleBtn');
-    const reopenBtn = document.getElementById('reopenSessionBtn');
-    const status = document.getElementById('mainSessionStatus');
-    if (sessionEnded) {
-      btn.textContent = '🔄 Start New Session';
-      btn.classList.add('ended');
-      reopenBtn.style.display = 'block';
-      if (status) {
-        status.textContent = 'No session started yet';
+    const status = document.getElementById('myBookingStatus');
+    if (status) {
+      if (sessionEnded) {
+        status.textContent = "You're not attached to a booking yet.";
         status.classList.remove('active');
-      }
-    } else {
-      btn.textContent = '⏹ End Session';
-      btn.classList.remove('ended');
-      reopenBtn.style.display = 'none';
-      if (status) {
-        status.textContent = currentPolicyNumber
-          ? `Active: ${mainSessionType} (Policy #${currentPolicyNumber})`
-          : `Active: ${mainSessionType}`;
+      } else {
+        const idText = currentUcNumber ? ` (UC #${currentUcNumber})` : currentPolicyNumber ? ` (Policy #${currentPolicyNumber})` : '';
+        status.textContent = `You're on: ${mainSessionType}${idText}`;
         status.classList.add('active');
       }
     }
     updateWorkControlsGating();
   }
 
-  function reopenSession() {
-    resetIdleTimer();
-    closeDeadTime();
-    const policySuffix = currentPolicyNumber ? ` (Policy #${currentPolicyNumber})` : '';
-    logEntry('Session', `Session reopened — ${mainSessionType}${policySuffix}`);
-    sessionEnded = false;
-    // Restore the remembered type/policy display and re-lock the fields,
-    // since we're resuming the same session, not starting a fresh one.
-    const typeSelect = document.getElementById('mainSessionTypeSelect');
-    const otherInput = document.getElementById('mainSessionOtherInput');
-    const policyInput = document.getElementById('policyNumberInput');
-    const isKnownOption = Array.from(typeSelect.options).some(o => o.value === mainSessionType);
-    typeSelect.value = isKnownOption ? mainSessionType : 'Other';
-    typeSelect.disabled = true;
-    if (!isKnownOption) {
-      otherInput.value = mainSessionType;
-      otherInput.style.display = 'block';
-    }
-    otherInput.disabled = true;
-    policyInput.value = currentPolicyNumber || '';
-    policyInput.disabled = true;
-    updateSessionButton();
-    updateTotals();
-    saveToStorage();
-    showStatus('Session reopened');
-  }
 
   // ---- Page mode: two genuinely separate HTML files sharing this one
   // app.js and style.css, instead of one file with a URL parameter. Each

@@ -841,6 +841,87 @@
     color: var(--muted);
     font-size: 13px;
   }
+  .my-booking-status {
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 14px;
+    margin-bottom: 12px;
+    font-size: 14px;
+    color: var(--muted);
+  }
+  .my-booking-status.active {
+    border-color: var(--accent);
+    color: var(--accent);
+    font-weight: 600;
+  }
+  .active-bookings-header {
+    font-family: 'Oswald', 'Arial Narrow', sans-serif;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 8px;
+  }
+  .active-bookings-list {
+    max-height: 200px;
+    overflow-y: auto;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    margin-bottom: 16px;
+  }
+  .active-booking-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+  }
+  .active-booking-row:last-child {
+    border-bottom: none;
+  }
+  .active-booking-label {
+    color: var(--text);
+  }
+  .active-booking-meta {
+    color: var(--muted);
+    font-size: 11px;
+    margin-top: 2px;
+  }
+  .active-bookings-empty {
+    padding: 14px;
+    text-align: center;
+    color: var(--muted);
+    font-size: 13px;
+  }
+  .join-booking-btn {
+    background: var(--accent);
+    color: #2a1c02;
+    border: none;
+    border-radius: 5px;
+    padding: 6px 14px;
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .start-booking-form {
+    border-top: 1px solid var(--border);
+    padding-top: 14px;
+  }
+  .start-booking-header {
+    font-family: 'Oswald', 'Arial Narrow', sans-serif;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 10px;
+  }
   .target-row label {
     font-size: 13px;
     color: var(--muted);
