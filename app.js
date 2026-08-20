@@ -701,9 +701,13 @@ let entries = [];
 
   let clockPaused = false;
   let sessionEnded = true;
-  // Which booking THIS device is currently attached to — personal, not
-  // synced. Multiple devices can each be attached to their own (or the
-  // same, if they joined) booking at the same time.
+  // Which booking THIS TAB is currently attached to — personal, not synced.
+  // Uses sessionStorage (not localStorage) specifically because localStorage
+  // is shared across every tab in the same browser, which would make two
+  // tabs of the same browser collide onto the same booking automatically.
+  // sessionStorage is unique per tab, so opening a second tab for a second
+  // concurrent booking genuinely starts independent — the tradeoff is that
+  // closing a tab (not just refreshing it) forgets which booking it was on.
   let myBookingId = null;
   const MY_BOOKING_KEY = 'walden_robot_tracker_my_booking_id';
   let clockIntervalId = null;
@@ -2089,7 +2093,7 @@ let entries = [];
     // never from "whatever the last Session entry anywhere happened to be,"
     // since multiple concurrent bookings can exist now.
     let storedBookingId = null;
-    try { storedBookingId = localStorage.getItem(MY_BOOKING_KEY); } catch (err) { /* ignore */ }
+    try { storedBookingId = sessionStorage.getItem(MY_BOOKING_KEY); } catch (err) { /* ignore */ }
 
     if (storedBookingId) {
       const active = computeActiveBookings();
@@ -2103,7 +2107,7 @@ let entries = [];
       } else {
         // It was ended (by us or someone else) since we last checked in —
         // don't keep pointing at a closed booking.
-        try { localStorage.removeItem(MY_BOOKING_KEY); } catch (err) { /* ignore */ }
+        try { sessionStorage.removeItem(MY_BOOKING_KEY); } catch (err) { /* ignore */ }
         myBookingId = null;
         sessionEnded = true;
       }
@@ -2382,7 +2386,7 @@ let entries = [];
     currentPolicyNumber = policyNumber;
     currentUcNumber = ucNumber;
     sessionEnded = false;
-    try { localStorage.setItem(MY_BOOKING_KEY, bookingId); } catch (err) { /* ignore */ }
+    try { sessionStorage.setItem(MY_BOOKING_KEY, bookingId); } catch (err) { /* ignore */ }
     closeDeadTime();
 
     const startBookingForm = document.getElementById('startBookingForm');
@@ -2401,7 +2405,7 @@ let entries = [];
     currentPolicyNumber = null;
     currentUcNumber = null;
     sessionEnded = true;
-    try { localStorage.removeItem(MY_BOOKING_KEY); } catch (err) { /* ignore */ }
+    try { sessionStorage.removeItem(MY_BOOKING_KEY); } catch (err) { /* ignore */ }
 
     const typeSelect = document.getElementById('mainSessionTypeSelect');
     const otherInput = document.getElementById('mainSessionOtherInput');
