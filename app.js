@@ -469,15 +469,18 @@ let entries = [];
 
     // Build a lookup of task-number -> start timestamp (in seconds-of-day),
     // taking entries in chronological order so each "started" pairs with
-    // the next "completed" for the same task number.
+    // the next "completed" for the same task number. Keyed by bookingId so
+    // concurrent bookings' interleaved start/end pairs never cross-contaminate
+    // each other's duration calculations.
     const sorted = getViewingEntries().sort((a, b) => (entrySortValue(a) - entrySortValue(b)) || (a.seq - b.seq));
     const openStarts = {};
-    let openDowntimeStart = null;
-    let openLunchStart = null;
-    let openDeadTimeStart = null;
+    const openDowntimeStartByBooking = {};
+    const openLunchStartByBooking = {};
+    let openDeadTimeStart = null; // Dead Time deliberately stays global — see note in inferTaskNumberFromEntries
 
     sorted.forEach(e => {
       const note = e.note || '';
+      const bk = e.bookingId || '__none__';
       const startMatch = note.match(/task\s+(\d+)\s+started/i);
       const completeMatch = note.match(/task\s+(\d+)\s+(completed|compled)/i);
       const downtimeStartMatch = /downtime\s+started/i.test(note);
@@ -488,37 +491,37 @@ let entries = [];
       const deadTimeEndMatch = /dead time\s+(ended|completed)/i.test(note);
 
       if (startMatch) {
-        openStarts[startMatch[1]] = timeToMinutes(e.timestamp);
+        openStarts[`${bk}:${startMatch[1]}`] = timeToMinutes(e.timestamp);
       } else if (completeMatch) {
         tasksCompleted += 1;
-        const num = completeMatch[1];
+        const key = `${bk}:${completeMatch[1]}`;
         if (typeof e.durationSeconds === 'number') {
           totalSeconds += e.durationSeconds;
-        } else if (openStarts.hasOwnProperty(num)) {
-          const diff = timeToMinutes(e.timestamp) - openStarts[num];
+        } else if (openStarts.hasOwnProperty(key)) {
+          const diff = timeToMinutes(e.timestamp) - openStarts[key];
           if (diff > 0) totalSeconds += diff;
         }
-        delete openStarts[num];
+        delete openStarts[key];
       } else if (downtimeStartMatch) {
-        openDowntimeStart = timeToMinutes(e.timestamp);
+        openDowntimeStartByBooking[bk] = timeToMinutes(e.timestamp);
       } else if (downtimeEndMatch) {
         if (typeof e.durationSeconds === 'number') {
           totalDowntimeSeconds += e.durationSeconds;
-        } else if (openDowntimeStart !== null) {
-          const diff = timeToMinutes(e.timestamp) - openDowntimeStart;
+        } else if (openDowntimeStartByBooking.hasOwnProperty(bk)) {
+          const diff = timeToMinutes(e.timestamp) - openDowntimeStartByBooking[bk];
           if (diff > 0) totalDowntimeSeconds += diff;
         }
-        openDowntimeStart = null;
+        delete openDowntimeStartByBooking[bk];
       } else if (lunchStartMatch) {
-        openLunchStart = timeToMinutes(e.timestamp);
+        openLunchStartByBooking[bk] = timeToMinutes(e.timestamp);
       } else if (lunchEndMatch) {
         if (typeof e.durationSeconds === 'number') {
           totalLunchSeconds += e.durationSeconds;
-        } else if (openLunchStart !== null) {
-          const diff = timeToMinutes(e.timestamp) - openLunchStart;
+        } else if (openLunchStartByBooking.hasOwnProperty(bk)) {
+          const diff = timeToMinutes(e.timestamp) - openLunchStartByBooking[bk];
           if (diff > 0) totalLunchSeconds += diff;
         }
-        openLunchStart = null;
+        delete openLunchStartByBooking[bk];
       } else if (deadTimeStartMatch) {
         openDeadTimeStart = timeToMinutes(e.timestamp);
       } else if (deadTimeEndMatch) {
@@ -580,22 +583,22 @@ let entries = [];
       return;
     }
 
-    // Session boundaries are marked by Session-type entries. Count how many
-    // "new session started" markers precede the end of the log to figure
-    // out which session number we're currently in, and find where the
-    // current session's own entries begin.
-    let sessionNumber = 1;
-    let currentSessionStartIndex = 0;
+    // Scope to just THIS device's own booking's entries — with concurrent
+    // bookings now possible, someone else starting a completely separate
+    // booking must never truncate or reset this device's own duration
+    // calculation. Only my own booking's entries count here.
+    const myEntries = sortedEntries.filter(e => e.bookingId === myBookingId);
 
-    sortedEntries.forEach((e, idx) => {
-      if (e.type === 'Session' && /new session started/i.test(e.note || '')) {
-        sessionNumber += 1;
-        currentSessionStartIndex = idx;
-      }
-    });
+    if (!myBookingId || myEntries.length === 0) {
+      display.textContent = '0m 0s';
+      label.textContent = 'Booking Duration';
+      document.getElementById('downtimeAlert').style.display = 'none';
+      renderSessionsPanel(sortedEntries);
+      return;
+    }
 
-    const currentSessionEntries = sortedEntries.slice(currentSessionStartIndex);
-    label.textContent = `Session ${sessionNumber} Duration`;
+    const currentSessionEntries = myEntries;
+    label.textContent = 'Current Booking Duration';
 
     const firstSeconds = timeToMinutes(currentSessionEntries[0].timestamp);
     const lastEntrySeconds = timeToMinutes(currentSessionEntries[currentSessionEntries.length - 1].timestamp);
@@ -613,11 +616,11 @@ let entries = [];
     if (diff < 0) diff = 0;
     display.textContent = formatDuration(diff);
 
-    updateDowntimeAlert(currentSessionEntries, diff, sessionNumber);
+    updateDowntimeAlert(currentSessionEntries, diff);
     renderSessionsPanel(sortedEntries);
   }
 
-  function updateDowntimeAlert(currentSessionEntries, sessionSpanSeconds, sessionNumber) {
+  function updateDowntimeAlert(currentSessionEntries, sessionSpanSeconds) {
     const banner = document.getElementById('downtimeAlert');
     const DOWNTIME_ALERT_THRESHOLD_PCT = 20;
 
