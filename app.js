@@ -2062,36 +2062,12 @@ let entries = [];
   }
 
   function inferTaskNumberFromEntries() {
-    let maxCompleted = 0;
-    let maxStarted = 0;
-    let startedEntry = null;
-    getTodayEntries().forEach(e => {
-      const note = e.note || '';
-      const m = note.match(/task\s+(\d+)\s+(started|completed|compled)/i);
-      if (!m) return;
-      const num = parseInt(m[1], 10);
-      const kind = m[2].toLowerCase();
-      if (kind === 'started') {
-        if (num >= maxStarted) { maxStarted = num; startedEntry = e; }
-      } else {
-        maxCompleted = Math.max(maxCompleted, num);
-      }
-    });
-    if (maxStarted > maxCompleted) {
-      currentTaskNumber = maxStarted;
-      taskInProgress = true;
-      taskStartTimestamp = startedEntry ? parseTimestampToDate(startedEntry.timestamp) : new Date();
-    } else if (maxCompleted > 0 || maxStarted > 0) {
-      currentTaskNumber = Math.max(maxCompleted, maxStarted) + 1;
-      taskInProgress = false;
-      taskStartTimestamp = null;
-    }
-
-    // Restore which booking THIS device was attached to, verify it's still
-    // actually open (someone else might have ended it while we were away),
-    // and derive the live UI state from just that booking's own entries —
-    // never from "whatever the last Session entry anywhere happened to be,"
-    // since multiple concurrent bookings can exist now.
+    // Restore which booking THIS TAB was attached to FIRST, and verify it's
+    // still actually open (someone else might have ended it while we were
+    // away) — everything below this point (task/downtime/lunch state) needs
+    // to be scoped to just this booking's own entries, since multiple
+    // concurrent bookings now exist and their entries interleave together
+    // in the shared, synced entries list.
     let storedBookingId = null;
     try { storedBookingId = sessionStorage.getItem(MY_BOOKING_KEY); } catch (err) { /* ignore */ }
 
@@ -2112,7 +2088,41 @@ let entries = [];
         sessionEnded = true;
       }
     } else {
+      myBookingId = null;
       sessionEnded = true;
+    }
+
+    // Task numbering and in-progress state — scoped to MY booking only, so
+    // Person A's task on Booking X never bleeds into Person B's view of
+    // Booking Y.
+    let maxCompleted = 0;
+    let maxStarted = 0;
+    let startedEntry = null;
+    getTodayEntries()
+      .filter(e => e.bookingId === myBookingId)
+      .forEach(e => {
+        const note = e.note || '';
+        const m = note.match(/task\s+(\d+)\s+(started|completed|compled)/i);
+        if (!m) return;
+        const num = parseInt(m[1], 10);
+        const kind = m[2].toLowerCase();
+        if (kind === 'started') {
+          if (num >= maxStarted) { maxStarted = num; startedEntry = e; }
+        } else {
+          maxCompleted = Math.max(maxCompleted, num);
+        }
+      });
+    if (maxStarted > maxCompleted) {
+      currentTaskNumber = maxStarted;
+      taskInProgress = true;
+      taskStartTimestamp = startedEntry ? parseTimestampToDate(startedEntry.timestamp) : new Date();
+    } else if (maxCompleted > 0 || maxStarted > 0) {
+      currentTaskNumber = Math.max(maxCompleted, maxStarted) + 1;
+      taskInProgress = false;
+      taskStartTimestamp = null;
+    } else {
+      taskInProgress = false;
+      taskStartTimestamp = null;
     }
 
     const typeSelect = document.getElementById('mainSessionTypeSelect');
@@ -2142,27 +2152,41 @@ let entries = [];
     if (startBookingForm) startBookingForm.style.display = sessionEnded ? 'block' : 'none';
     if (endBookingRow) endBookingRow.style.display = sessionEnded ? 'none' : 'block';
 
-    // Determine whether the most recent Downtime entry left downtime running
+    // Downtime — scoped to MY booking only. This is the fix for the bug
+    // where one person ending their downtime was affecting everyone else's
+    // downtime status too, since this used to scan ALL of today's downtime
+    // entries globally instead of just the ones tied to this tab's booking.
     const downtimeEvents = getTodayEntries()
-      .filter(e => e.type === 'Downtime')
+      .filter(e => e.type === 'Downtime' && e.bookingId === myBookingId)
       .slice()
       .sort((a, b) => (entrySortValue(a) - entrySortValue(b)) || (a.seq - b.seq));
     if (downtimeEvents.length > 0) {
       const last = downtimeEvents[downtimeEvents.length - 1];
       downtimeInProgress = /started/i.test(last.note || '');
       downtimeStartTimestamp = downtimeInProgress ? parseTimestampToDate(last.timestamp) : null;
+    } else {
+      downtimeInProgress = false;
+      downtimeStartTimestamp = null;
     }
 
+    // Lunch — same fix, scoped to MY booking only.
     const lunchEvents = getTodayEntries()
-      .filter(e => e.type === 'Lunch')
+      .filter(e => e.type === 'Lunch' && e.bookingId === myBookingId)
       .slice()
       .sort((a, b) => (entrySortValue(a) - entrySortValue(b)) || (a.seq - b.seq));
     if (lunchEvents.length > 0) {
       const last = lunchEvents[lunchEvents.length - 1];
       lunchInProgress = /started/i.test(last.note || '');
       lunchStartTimestamp = lunchInProgress ? parseTimestampToDate(last.timestamp) : null;
+    } else {
+      lunchInProgress = false;
+      lunchStartTimestamp = null;
     }
 
+    // Dead Time deliberately stays global (bookingId is always null for
+    // these entries by design) — it represents "not attached to any
+    // booking," which isn't a per-booking concept the same way task/
+    // downtime/lunch are.
     const deadTimeEvents = getTodayEntries()
       .filter(e => e.type === 'DeadTime')
       .slice()
@@ -2178,7 +2202,6 @@ let entries = [];
     updateDowntimeButton();
     updateLunchButton();
   }
-
   function parseTimestampToDate(t) {
     const seconds = timeToMinutes(t);
     const d = new Date();
@@ -2299,7 +2322,17 @@ let entries = [];
       const isMidAction = (id === 'taskActionBtn' && taskInProgress) ||
                            (id === 'downtimeActionBtn' && downtimeInProgress) ||
                            (id === 'lunchActionBtn' && lunchInProgress);
-      if (isMidAction) return;
+      if (isMidAction) {
+        // A "stop what you're currently doing" button must ALWAYS be
+        // clickable, no matter what — force it enabled rather than leaving
+        // it however it happened to be before, which could leave someone
+        // stuck unable to end their own lunch/downtime/task if it got
+        // disabled for any other reason right around when it started.
+        btn.disabled = false;
+        btn.style.opacity = '1';
+        btn.style.cursor = 'pointer';
+        return;
+      }
       btn.disabled = !enabled;
       btn.style.opacity = enabled ? '1' : '0.5';
       btn.style.cursor = enabled ? 'pointer' : 'not-allowed';
