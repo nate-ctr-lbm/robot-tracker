@@ -955,7 +955,52 @@ let entries = [];
     table.style.display = 'table';
     empty.style.display = 'none';
 
-    body.innerHTML = viewEntries.slice().sort((a, b) => (entrySortValue(b) - entrySortValue(a)) || (b.seq - a.seq)).map(e => `
+    // Group by booking so a long day's log reads as distinct sections
+    // instead of one undifferentiated list — Dead Time (and any legacy
+    // entries with no bookingId) get their own group since they aren't
+    // part of any specific booking.
+    const groups = {};
+    viewEntries.forEach(e => {
+      const key = e.bookingId || '__unassigned__';
+      if (!groups[key]) groups[key] = [];
+      groups[key].push(e);
+    });
+
+    const groupList = Object.keys(groups).map(key => {
+      const groupEntries = groups[key].sort((a, b) => (entrySortValue(b) - entrySortValue(a)) || (b.seq - a.seq));
+      const mostRecentSortVal = entrySortValue(groupEntries[0]);
+
+      let title = 'Dead Time / Unassigned';
+      let meta = '';
+      if (key !== '__unassigned__') {
+        const startEntry = [...groupEntries].reverse().find(e => /new session started/i.test(e.note || '')) || groupEntries[groupEntries.length - 1];
+        const note = startEntry.note || '';
+        const policyMatch = note.match(/\(Policy #(\d+)\)\s*$/);
+        const ucMatch = note.match(/\(UC #(\d+)\)\s*$/);
+        const noteClean = note.replace(/\s*\(Policy #\d+\)\s*$/, '').replace(/\s*\(UC #\d+\)\s*$/, '');
+        const typeMatch = noteClean.match(/—\s*(.+)$/);
+        const type = typeMatch ? typeMatch[1].trim() : 'Unknown';
+        const idSuffix = ucMatch ? ` (UC #${ucMatch[1]})` : policyMatch ? ` (Policy #${policyMatch[1]})` : '';
+        const operators = [...new Set(groupEntries.map(e => e.operator).filter(Boolean))];
+        const first = groupEntries[groupEntries.length - 1].timestamp;
+        const last = groupEntries[0].timestamp;
+        title = `${type}${idSuffix}`;
+        meta = `${escapeHtml(operators.join(', ') || '—')} — ${first} to ${last} — ${groupEntries.length} ${groupEntries.length === 1 ? 'entry' : 'entries'}`;
+      } else {
+        meta = `${groupEntries.length} ${groupEntries.length === 1 ? 'entry' : 'entries'}`;
+      }
+
+      return { key, groupEntries, mostRecentSortVal, title, meta };
+    }).sort((a, b) => b.mostRecentSortVal - a.mostRecentSortVal);
+
+    body.innerHTML = groupList.map(g => `
+      <tr class="log-group-header">
+        <td colspan="6">
+          <span class="log-group-title">${escapeHtml(g.title)}</span>
+          <span class="log-group-meta">${g.meta}</span>
+        </td>
+      </tr>
+      ${g.groupEntries.map(e => `
       <tr data-id="${e.id}">
         <td>${formatDateShort(e.date)}</td>
         <td>${e.timestamp}</td>
@@ -969,6 +1014,7 @@ let entries = [];
           <button class="delete-btn" onclick="deleteEntry('${e.id}')">Delete</button>
         </td>
       </tr>
+      `).join('')}
     `).join('');
   }
 
@@ -2510,13 +2556,13 @@ let entries = [];
     if (deadTimeInProgress) return;
     deadTimeInProgress = true;
     deadTimeStartTimestamp = new Date();
-    logEntry('DeadTime', 'Dead time started');
+    logEntry('DeadTime', 'Dead time started', null, null, null);
   }
 
   function closeDeadTime() {
     if (!deadTimeInProgress || !deadTimeStartTimestamp) return;
     const durationSeconds = Math.round((new Date() - deadTimeStartTimestamp) / 1000);
-    logEntry('DeadTime', `Dead time ended (${formatDuration(durationSeconds)})`, durationSeconds);
+    logEntry('DeadTime', `Dead time ended (${formatDuration(durationSeconds)})`, durationSeconds, null, null);
     deadTimeInProgress = false;
     deadTimeStartTimestamp = null;
   }
