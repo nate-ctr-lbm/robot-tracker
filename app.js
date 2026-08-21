@@ -221,9 +221,9 @@ let entries = [];
   function updateTaskButton() {
     const btn = document.getElementById('taskActionBtn');
     if (taskInProgress) {
-      btn.textContent = '⏹ Stop Timer';
+      btn.textContent = '⏹ Stop Run';
     } else {
-      btn.textContent = '▶ Start Timer';
+      btn.textContent = '▶ Start Run';
     }
   }
 
@@ -261,9 +261,6 @@ let entries = [];
     // close the downtime first so it doesn't overlap with active work.
     if (!taskInProgress && downtimeInProgress) {
       autoCloseDowntime('task started');
-    }
-    if (!taskInProgress && lunchInProgress) {
-      autoCloseLunch('task started');
     }
 
     const noteInput = document.getElementById('noteInput');
@@ -341,9 +338,6 @@ let entries = [];
       return;
     }
 
-    if (!downtimeInProgress && lunchInProgress) {
-      autoCloseLunch('downtime started');
-    }
     let baseNote, durationSeconds = null, category = null;
 
     if (downtimeInProgress) {
@@ -382,56 +376,14 @@ let entries = [];
     btn.textContent = downtimeInProgress ? '▶ End Downtime' : '⏸ Start Downtime';
   }
 
-  function handleLunchAction() {
-    if (sessionEnded) {
-      showStatus('⚠ Start a Session first');
-      return;
-    }
-    resetIdleTimer();
-    // Lunch and downtime are mutually exclusive states
-    if (!lunchInProgress && downtimeInProgress) {
-      autoCloseDowntime('lunch started');
-    }
-
-    let baseNote, durationSeconds = null;
-
-    if (lunchInProgress) {
-      baseNote = 'Lunch ended';
-      if (lunchStartTimestamp) {
-        durationSeconds = Math.round((new Date() - lunchStartTimestamp) / 1000);
-        baseNote += ` (${formatDuration(durationSeconds)})`;
-      }
-    } else {
-      baseNote = 'Lunch started';
-      lunchStartTimestamp = new Date();
-    }
-
-    logEntry('Lunch', baseNote, durationSeconds);
-
-    lunchInProgress = !lunchInProgress;
-    if (!lunchInProgress) lunchStartTimestamp = null;
-    updateLunchButton();
-    updateTotals();
-  }
-
-  function updateLunchButton() {
-    const btn = document.getElementById('lunchActionBtn');
-    btn.textContent = lunchInProgress ? '▶ End Lunch' : '🍽 Start Lunch';
-  }
-
-  function autoCloseLunch(reason) {
-    if (!lunchInProgress || !lunchStartTimestamp) return;
-    const durationSeconds = Math.round((new Date() - lunchStartTimestamp) / 1000);
-    logEntry('Lunch', `Lunch ended (${formatDuration(durationSeconds)}) — auto-closed: ${reason}`, durationSeconds);
-    lunchInProgress = false;
-    lunchStartTimestamp = null;
-    updateLunchButton();
-    updateTotals();
-  }
-
   function formatDuration(totalSeconds) {
-    const m = Math.floor(totalSeconds / 60);
+    totalSeconds = Math.max(0, Math.round(totalSeconds));
+    const h = Math.floor(totalSeconds / 3600);
+    const m = Math.floor((totalSeconds % 3600) / 60);
     const s = totalSeconds % 60;
+    if (h > 0) {
+      return `${h}h ${m}m ${s}s`;
+    }
     return `${m}m ${s}s`;
   }
 
@@ -441,7 +393,10 @@ let entries = [];
     if (!pill || !text) return;
     pill.classList.remove('pill-working', 'pill-downtime', 'pill-lunch', 'pill-deadtime');
 
-    if (taskInProgress) {
+    if (!sessionEnded && mainSessionType === 'Lunch') {
+      pill.classList.add('pill-lunch');
+      text.textContent = 'On Lunch Break';
+    } else if (taskInProgress) {
       pill.classList.add('pill-working');
       const desc = currentTaskDescription ? ` — ${currentTaskDescription}` : '';
       text.textContent = `Working on Task ${currentTaskNumber}${desc}`;
@@ -449,9 +404,6 @@ let entries = [];
       pill.classList.add('pill-downtime');
       const cat = currentDowntimeCategory ? ` (${currentDowntimeCategory})` : '';
       text.textContent = `Downtime${cat}`;
-    } else if (lunchInProgress) {
-      pill.classList.add('pill-lunch');
-      text.textContent = 'At Lunch';
     } else if (deadTimeInProgress) {
       pill.classList.add('pill-deadtime');
       text.textContent = 'Off Headset (between sessions)';
@@ -464,7 +416,6 @@ let entries = [];
     let totalSeconds = 0;
     let tasksCompleted = 0;
     let totalDowntimeSeconds = 0;
-    let totalLunchSeconds = 0;
     let totalDeadTimeSeconds = 0;
 
     // Build a lookup of task-number -> start timestamp (in seconds-of-day),
@@ -475,18 +426,15 @@ let entries = [];
     const sorted = getViewingEntries().sort((a, b) => (entrySortValue(a) - entrySortValue(b)) || (a.seq - b.seq));
     const openStarts = {};
     const openDowntimeStartByBooking = {};
-    const openLunchStartByBooking = {};
     let openDeadTimeStart = null; // Dead Time deliberately stays global — see note in inferTaskNumberFromEntries
 
     sorted.forEach(e => {
       const note = e.note || '';
-      const bk = e.bookingId || '__none__';
+      const bk = `${e.bookingId || '__none__'}::${e.operator || '__none__'}`;
       const startMatch = note.match(/task\s+(\d+)\s+started/i);
       const completeMatch = note.match(/task\s+(\d+)\s+(completed|compled)/i);
       const downtimeStartMatch = /downtime\s+started/i.test(note);
       const downtimeEndMatch = /downtime\s+(ended|completed)/i.test(note);
-      const lunchStartMatch = /lunch\s+started/i.test(note);
-      const lunchEndMatch = /lunch\s+(ended|completed)/i.test(note);
       const deadTimeStartMatch = /dead time\s+started/i.test(note);
       const deadTimeEndMatch = /dead time\s+(ended|completed)/i.test(note);
 
@@ -512,16 +460,6 @@ let entries = [];
           if (diff > 0) totalDowntimeSeconds += diff;
         }
         delete openDowntimeStartByBooking[bk];
-      } else if (lunchStartMatch) {
-        openLunchStartByBooking[bk] = timeToMinutes(e.timestamp);
-      } else if (lunchEndMatch) {
-        if (typeof e.durationSeconds === 'number') {
-          totalLunchSeconds += e.durationSeconds;
-        } else if (openLunchStartByBooking.hasOwnProperty(bk)) {
-          const diff = timeToMinutes(e.timestamp) - openLunchStartByBooking[bk];
-          if (diff > 0) totalLunchSeconds += diff;
-        }
-        delete openLunchStartByBooking[bk];
       } else if (deadTimeStartMatch) {
         openDeadTimeStart = timeToMinutes(e.timestamp);
       } else if (deadTimeEndMatch) {
@@ -533,6 +471,28 @@ let entries = [];
         }
         openDeadTimeStart = null;
       }
+    });
+
+    // Total Lunch is now the sum of whole BOOKINGS whose type is "Lunch"
+    // (Lunch is a booking type now, not a sub-state within a work booking),
+    // scoped to just the currently viewed date.
+    let totalLunchSeconds = 0;
+    const lunchBookingGroups = {};
+    sorted.forEach(e => {
+      if (e.type !== 'Session' || !e.bookingId) return;
+      if (!lunchBookingGroups[e.bookingId]) lunchBookingGroups[e.bookingId] = [];
+      lunchBookingGroups[e.bookingId].push(e);
+    });
+    Object.values(lunchBookingGroups).forEach(group => {
+      const g = group.sort((a, b) => (entrySortValue(a) - entrySortValue(b)) || (a.seq - b.seq));
+      const startEntry = g.find(e => /new session started/i.test(e.note || '') || /^joined booking/i.test(e.note || ''));
+      if (!startEntry || !/—\s*Lunch\s*(\(|$)/i.test(startEntry.note || '')) return;
+      const endEntry = [...g].reverse().find(e => /^session ended/i.test(e.note || ''));
+      const startSec = timeToMinutes(g[0].timestamp);
+      const endSec = endEntry ? timeToMinutes(endEntry.timestamp) : timeToMinutes(g[g.length - 1].timestamp);
+      let diff = endSec - startSec;
+      if (diff < 0) diff += 24 * 3600;
+      totalLunchSeconds += diff;
     });
 
     document.getElementById('totalActiveDisplay').textContent = formatDuration(totalSeconds);
@@ -851,10 +811,6 @@ let entries = [];
         pausedDowntimeElapsed = new Date() - downtimeStartTimestamp;
         downtimeStartTimestamp = null;
       }
-      if (lunchInProgress && lunchStartTimestamp) {
-        pausedLunchElapsed = new Date() - lunchStartTimestamp;
-        lunchStartTimestamp = null;
-      }
       showStatus('Clock paused');
     } else {
       btn.textContent = '⏸ Pause Clock';
@@ -867,10 +823,6 @@ let entries = [];
       if (downtimeInProgress && pausedDowntimeElapsed !== null) {
         downtimeStartTimestamp = new Date(new Date() - pausedDowntimeElapsed);
         pausedDowntimeElapsed = null;
-      }
-      if (lunchInProgress && pausedLunchElapsed !== null) {
-        lunchStartTimestamp = new Date(new Date() - pausedLunchElapsed);
-        pausedLunchElapsed = null;
       }
       tick();
       showStatus('Clock resumed');
@@ -2095,12 +2047,13 @@ let entries = [];
       sessionEnded = true;
     }
 
-    // Task numbering and in-progress state — scoped to MY booking only, so
-    // Person A's task on Booking X never bleeds into Person B's view of
-    // Booking Y.
+    // Task numbering stays shared across the WHOLE booking (numbers keep
+    // incrementing regardless of who's doing them) — but whether a task is
+    // currently IN PROGRESS is tracked per-operator, so two different
+    // people sharing one booking can each have their own task running
+    // without interfering with each other's button state.
     let maxCompleted = 0;
     let maxStarted = 0;
-    let startedEntry = null;
     getTodayEntries()
       .filter(e => e.bookingId === myBookingId)
       .forEach(e => {
@@ -2110,19 +2063,28 @@ let entries = [];
         const num = parseInt(m[1], 10);
         const kind = m[2].toLowerCase();
         if (kind === 'started') {
-          if (num >= maxStarted) { maxStarted = num; startedEntry = e; }
+          maxStarted = Math.max(maxStarted, num);
         } else {
           maxCompleted = Math.max(maxCompleted, num);
         }
       });
-    if (maxStarted > maxCompleted) {
-      currentTaskNumber = maxStarted;
-      taskInProgress = true;
-      taskStartTimestamp = startedEntry ? parseTimestampToDate(startedEntry.timestamp) : new Date();
-    } else if (maxCompleted > 0 || maxStarted > 0) {
-      currentTaskNumber = Math.max(maxCompleted, maxStarted) + 1;
-      taskInProgress = false;
-      taskStartTimestamp = null;
+    currentTaskNumber = Math.max(maxCompleted, maxStarted) + (maxStarted > maxCompleted ? 0 : 1);
+
+    // Now find MY OWN most recent task event specifically — this is what
+    // actually determines whether the Task Timer button on THIS device
+    // shows Start or Stop.
+    const myTaskEvents = getTodayEntries()
+      .filter(e => e.bookingId === myBookingId && e.operator === currentOperator)
+      .filter(e => /task\s+\d+\s+(started|completed|compled)/i.test(e.note || ''))
+      .sort((a, b) => (entrySortValue(a) - entrySortValue(b)) || (a.seq - b.seq));
+    if (myTaskEvents.length > 0) {
+      const lastMine = myTaskEvents[myTaskEvents.length - 1];
+      taskInProgress = /started/i.test(lastMine.note || '');
+      taskStartTimestamp = taskInProgress ? parseTimestampToDate(lastMine.timestamp) : null;
+      if (taskInProgress) {
+        const m = (lastMine.note || '').match(/task\s+(\d+)\s+started/i);
+        if (m) currentTaskNumber = parseInt(m[1], 10);
+      }
     } else {
       taskInProgress = false;
       taskStartTimestamp = null;
@@ -2160,7 +2122,7 @@ let entries = [];
     // downtime status too, since this used to scan ALL of today's downtime
     // entries globally instead of just the ones tied to this tab's booking.
     const downtimeEvents = getTodayEntries()
-      .filter(e => e.type === 'Downtime' && e.bookingId === myBookingId)
+      .filter(e => e.type === 'Downtime' && e.bookingId === myBookingId && e.operator === currentOperator)
       .slice()
       .sort((a, b) => (entrySortValue(a) - entrySortValue(b)) || (a.seq - b.seq));
     if (downtimeEvents.length > 0) {
@@ -2170,20 +2132,6 @@ let entries = [];
     } else {
       downtimeInProgress = false;
       downtimeStartTimestamp = null;
-    }
-
-    // Lunch — same fix, scoped to MY booking only.
-    const lunchEvents = getTodayEntries()
-      .filter(e => e.type === 'Lunch' && e.bookingId === myBookingId)
-      .slice()
-      .sort((a, b) => (entrySortValue(a) - entrySortValue(b)) || (a.seq - b.seq));
-    if (lunchEvents.length > 0) {
-      const last = lunchEvents[lunchEvents.length - 1];
-      lunchInProgress = /started/i.test(last.note || '');
-      lunchStartTimestamp = lunchInProgress ? parseTimestampToDate(last.timestamp) : null;
-    } else {
-      lunchInProgress = false;
-      lunchStartTimestamp = null;
     }
 
     // Dead Time deliberately stays global (bookingId is always null for
@@ -2203,7 +2151,6 @@ let entries = [];
     updateSessionButton();
     updateTaskButton();
     updateDowntimeButton();
-    updateLunchButton();
   }
   function parseTimestampToDate(t) {
     const seconds = timeToMinutes(t);
@@ -2249,7 +2196,6 @@ let entries = [];
     updateSessionButton();
     updateTaskButton();
     updateDowntimeButton();
-    updateLunchButton();
     renderLog();
     updateTotals();
     showStatus(statusMessage);
@@ -2315,21 +2261,20 @@ let entries = [];
   let currentUcNumber = null;
 
   function updateWorkControlsGating() {
-    // Task Timer / Downtime / Lunch only make sense once THIS device is
+    // Run Time / Downtime only make sense once THIS device is
     // attached to a booking, AND only while viewing today (not browsing
     // read-only history) — this is the "order of operations" enforcement.
     const enabled = !sessionEnded && isViewingToday();
-    ['taskActionBtn', 'downtimeActionBtn', 'lunchActionBtn'].forEach(id => {
+    ['taskActionBtn', 'downtimeActionBtn'].forEach(id => {
       const btn = document.getElementById(id);
       if (!btn) return;
       const isMidAction = (id === 'taskActionBtn' && taskInProgress) ||
-                           (id === 'downtimeActionBtn' && downtimeInProgress) ||
-                           (id === 'lunchActionBtn' && lunchInProgress);
+                           (id === 'downtimeActionBtn' && downtimeInProgress);
       if (isMidAction) {
         // A "stop what you're currently doing" button must ALWAYS be
         // clickable, no matter what — force it enabled rather than leaving
         // it however it happened to be before, which could leave someone
-        // stuck unable to end their own lunch/downtime/task if it got
+        // stuck unable to end their own downtime/task if it got
         // disabled for any other reason right around when it started.
         btn.disabled = false;
         btn.style.opacity = '1';
@@ -2523,7 +2468,7 @@ let entries = [];
     const bookingId = generateBookingId();
     const idSuffix = ucNumber ? ` (UC #${ucNumber})` : policyNumber ? ` (Policy #${policyNumber})` : '';
     logEntry('Session', `New session started — ${chosenType}${idSuffix}`, null, null, bookingId);
-    currentTaskNumber += taskInProgress ? 0 : 1;
+    currentTaskNumber = 1; // a genuinely new booking starts fresh, not continuing the last one's count
     taskInProgress = false;
     taskStartTimestamp = null;
     updateTaskButton();
@@ -2535,15 +2480,11 @@ let entries = [];
     resetIdleTimer();
     if (!myBookingId) return;
     if (taskInProgress) {
-      showStatus('⚠ Stop the Task Timer before ending the booking');
+      showStatus('⚠ Stop the Run Time before ending the booking');
       return;
     }
     if (downtimeInProgress) {
       showStatus('⚠ End Downtime before ending the booking');
-      return;
-    }
-    if (lunchInProgress) {
-      showStatus('⚠ End Lunch before ending the booking');
       return;
     }
     const idSuffix = currentUcNumber ? ` (UC #${currentUcNumber})` : currentPolicyNumber ? ` (Policy #${currentPolicyNumber})` : '';
@@ -2677,7 +2618,6 @@ let entries = [];
 
     updateTaskButton();
     updateDowntimeButton();
-    updateLunchButton();
     updateSessionButton();
     updateDateNavUI();
     updateTotals();
