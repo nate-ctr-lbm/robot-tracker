@@ -23,6 +23,24 @@
   </div>
 </div>
 
+<div id="operatorPromptOverlay" class="login-overlay" style="display:none;">
+  <div class="login-box">
+    <h1>Who's Operating?</h1>
+    <p class="login-sub">Pick your name to continue — you can change this anytime from the Operator card.</p>
+    <select id="operatorPromptSelect" onchange="handleOperatorPromptChange()">
+      <option value="Ajar">Ajar</option>
+      <option value="Nate">Nate</option>
+      <option value="Denny">Denny</option>
+      <option value="Alex">Alex</option>
+      <option value="Nishan">Nishan</option>
+      <option value="Allen">Allen</option>
+      <option value="Other">Other...</option>
+    </select>
+    <input type="text" id="operatorPromptOtherInput" placeholder="Your name" style="display:none; margin-top:8px;" />
+    <button id="operatorPromptSubmitBtn" onclick="confirmOperatorPrompt()" style="margin-top:12px;">Continue</button>
+  </div>
+</div>
+
 <div class="wrap" id="mainWrap" style="display:none;">
   <div class="header-row">
     <div class="header-left">

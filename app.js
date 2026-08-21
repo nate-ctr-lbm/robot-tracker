@@ -2599,12 +2599,35 @@ let entries = [];
 
   function unlockApp() {
     document.getElementById('loginOverlay').style.display = 'none';
+    document.getElementById('operatorPromptOverlay').style.display = 'flex';
+  }
+
+  function handleOperatorPromptChange() {
+    const select = document.getElementById('operatorPromptSelect');
+    const otherInput = document.getElementById('operatorPromptOtherInput');
+    otherInput.style.display = (select.value === 'Other') ? 'block' : 'none';
+  }
+
+  function confirmOperatorPrompt() {
+    const select = document.getElementById('operatorPromptSelect');
+    const otherInput = document.getElementById('operatorPromptOtherInput');
+    const chosen = (select.value === 'Other') ? otherInput.value.trim() : select.value;
+    if (!chosen) {
+      otherInput.focus();
+      return;
+    }
+    currentOperator = chosen;
+    document.getElementById('operatorPromptOverlay').style.display = 'none';
     document.getElementById('mainWrap').style.display = 'block';
     initApp();
   }
 
   document.getElementById('passcodeInput').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') attemptLogin();
+  });
+
+  document.getElementById('operatorPromptOtherInput').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') confirmOperatorPrompt();
   });
 
   async function initApp() {
