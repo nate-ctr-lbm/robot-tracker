@@ -926,6 +926,39 @@ let entries = [];
 
   let currentLogTabFilter = '__all__';
 
+  // A small palette that stays consistent with the app's existing accent
+  // colors rather than introducing clashing, overly-bright hues. "All" and
+  // "Dead Time" get fixed, sensible colors. Real bookings get one assigned
+  // in chronological start order (not hashed) — with hashing, even a
+  // handful of bookings can randomly collide while most of an 8-color
+  // palette sits unused; sequential assignment guarantees every booking
+  // gets a distinct color until the palette is genuinely exhausted.
+  const LOG_TAB_COLORS = ['#4fd1b8', '#7c9eff', '#e0512e', '#c77dff', '#5fd97a', '#ff9ecf', '#7fa3e8', '#ffb85c'];
+  let logTabColorMap = {};
+
+  function rebuildLogTabColorMap(groupList) {
+    // Order by earliest entry, not by most-recent-activity (which is what
+    // the tab bar itself is sorted by) — this way a booking's color stays
+    // fixed to when it started, and never shifts just because some OTHER
+    // booking became more recently active.
+    const byStart = groupList.slice().sort((a, b) => {
+      const aFirst = a.groupEntries[a.groupEntries.length - 1];
+      const bFirst = b.groupEntries[b.groupEntries.length - 1];
+      return entrySortValue(aFirst) - entrySortValue(bFirst);
+    });
+    const map = {};
+    byStart.forEach((g, i) => {
+      map[g.key] = LOG_TAB_COLORS[i % LOG_TAB_COLORS.length];
+    });
+    logTabColorMap = map;
+  }
+
+  function logTabColorForKey(key) {
+    if (key === '__all__') return 'var(--text)';
+    if (key === '__unassigned__') return 'var(--muted)';
+    return logTabColorMap[key] || 'var(--muted)';
+  }
+
   function renderLog() {
     renderSessionExportList();
     renderActiveBookingsList();
@@ -986,6 +1019,8 @@ let entries = [];
       return { key, groupEntries, mostRecentSortVal, title, meta };
     }).sort((a, b) => b.mostRecentSortVal - a.mostRecentSortVal);
 
+    rebuildLogTabColorMap(groupList);
+
     // If the tab someone was on no longer exists (e.g. its only entry got
     // deleted), fall back to "All" instead of silently showing nothing.
     if (currentLogTabFilter !== '__all__' && !groupList.some(g => g.key === currentLogTabFilter)) {
@@ -998,6 +1033,7 @@ let entries = [];
         .concat(groupList.map(g => ({ key: g.key, title: g.title, count: g.groupEntries.length })));
       tabBar.innerHTML = tabs.map(t => `
         <button class="log-tab ${currentLogTabFilter === t.key ? 'active' : ''}" onclick="switchLogTab('${t.key}')">
+          <span class="log-tab-bubble" style="background:${logTabColorForKey(t.key)};"></span>
           ${escapeHtml(t.title)} <span class="log-tab-count">${t.count}</span>
         </button>
       `).join('');
