@@ -2560,10 +2560,10 @@ let entries = [];
     });
 
     if (pageMode === 'policy') {
-      navLink.textContent = '📊 Go to Data Collection';
+      navLink.textContent = '→ DATA COLLECTION';
       navLink.href = 'index.html';
     } else {
-      navLink.textContent = '🎯 Go to Policy Training';
+      navLink.textContent = '→ POLICY TRAINING';
       navLink.href = 'policy-training.html';
     }
   }

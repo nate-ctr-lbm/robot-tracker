@@ -1,18 +1,23 @@
 :root {
     --bg: #00211e;
-    --panel: #0f2e2b;
-    --panel-alt: #193734;
+    --panel: #0a2e29;
+    --panel-alt: #123832;
     --accent: #f2b134;
     --accent2: #e0512e;
-    --lunch-signal: #5fb8ac;
-    --text: #eef5f3;
-    --muted: #8aa39f;
-    --border: #2f4b47;
+    --confirm: #4fd1b8;
+    --lunch-signal: #4fd1b8;
+    --text: #e8f3f0;
+    --muted: #7fa39c;
+    --border: #1f4a43;
+    --border-bright: #2f6359;
+    --font-display: 'Oswald', 'Arial Narrow', sans-serif;
+    --font-body: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-data: 'IBM Plex Mono', ui-monospace, 'SF Mono', 'Consolas', monospace;
   }
   * { box-sizing: border-box; }
   body {
     margin: 0;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-family: var(--font-body);
     background: var(--bg);
     color: var(--text);
     padding: 24px;
@@ -31,7 +36,7 @@
   .login-box {
     background: var(--panel);
     border: 1px solid var(--border);
-    border-radius: 10px;
+    border-radius: 2px;
     padding: 36px 32px;
     max-width: 360px;
     width: 100%;
@@ -54,7 +59,7 @@
   #passcodeInput {
     width: 100%;
     padding: 12px 14px;
-    border-radius: 8px;
+    border-radius: 3px;
     border: 1px solid var(--border);
     background: var(--bg);
     color: var(--text);
@@ -65,7 +70,7 @@
   #passcodeSubmitBtn {
     width: 100%;
     padding: 12px;
-    border-radius: 8px;
+    border-radius: 3px;
     border: none;
     background: var(--accent);
     color: #2a1c02;
@@ -78,6 +83,40 @@
     font-size: 13px;
     margin-top: 12px;
     min-height: 16px;
+  }
+  #operatorPromptSelect {
+    width: 100%;
+    padding: 12px 14px;
+    border-radius: 3px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--text);
+    font-size: 15px;
+    font-family: var(--font-body);
+    margin-bottom: 12px;
+    text-align: center;
+  }
+  #operatorPromptOtherInput {
+    width: 100%;
+    padding: 12px 14px;
+    border-radius: 3px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--text);
+    font-size: 15px;
+    margin-bottom: 12px;
+    text-align: center;
+  }
+  #operatorPromptSubmitBtn {
+    width: 100%;
+    padding: 12px;
+    border-radius: 3px;
+    border: none;
+    background: var(--accent);
+    color: #2a1c02;
+    font-weight: 700;
+    font-size: 14px;
+    cursor: pointer;
   }
   .fine-print {
     font-size: 11px;
@@ -105,7 +144,7 @@
   .card {
     background: var(--panel);
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: 3px;
     padding: 18px;
     margin-bottom: 16px;
   }
@@ -124,7 +163,7 @@
     gap: 10px;
     background: var(--panel);
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: 3px;
     padding: 10px 14px;
     margin-bottom: 14px;
   }
@@ -132,7 +171,7 @@
     background: var(--panel-alt);
     border: 1px solid var(--border);
     color: var(--text);
-    border-radius: 5px;
+    border-radius: 2px;
     width: 34px;
     height: 34px;
     font-size: 16px;
@@ -154,11 +193,11 @@
     background: var(--bg);
     border: 1px solid var(--border);
     color: var(--text);
-    border-radius: 5px;
-    font-family: ui-monospace, 'SF Mono', 'Roboto Mono', 'Consolas', monospace;
+    border-radius: 2px;
+    font-family: var(--font-data);
   }
   .date-nav-label {
-    font-family: 'Oswald', 'Arial Narrow', sans-serif;
+    font-family: var(--font-display);
     font-size: 13px;
     font-weight: 600;
     letter-spacing: 0.04em;
@@ -172,7 +211,7 @@
     background: var(--accent);
     color: #2a1c02;
     border: none;
-    border-radius: 5px;
+    border-radius: 2px;
     padding: 8px 14px;
     font-size: 12px;
     font-weight: 700;
@@ -182,7 +221,7 @@
     background: rgba(224,81,46,0.1);
     border: 1px solid var(--accent2);
     color: var(--text);
-    border-radius: 6px;
+    border-radius: 3px;
     padding: 10px 14px;
     font-size: 13px;
     margin-bottom: 16px;
@@ -196,7 +235,7 @@
     background: var(--accent2);
     color: #2a0f06;
     border: none;
-    border-radius: 5px;
+    border-radius: 2px;
     padding: 6px 14px;
     font-size: 12px;
     font-weight: 700;
@@ -208,7 +247,7 @@
   .card .buttons { margin-bottom: 0; }
   .card .session-btn-row { margin-bottom: 0; }
   .section-label {
-    font-family: 'Oswald', 'Arial Narrow', sans-serif;
+    font-family: var(--font-display);
     font-size: 13px;
     font-weight: 600;
     letter-spacing: 0.08em;
@@ -236,13 +275,20 @@
     border-bottom: none;
   }
   .page-nav-link {
-    font-size: 12px;
-    color: var(--accent);
+    font-size: 11px;
+    font-family: var(--font-display);
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    color: var(--confirm);
+    background: var(--panel-alt);
+    border: 1px solid var(--border-bright);
+    border-radius: 2px;
+    padding: 4px 9px;
     text-decoration: none;
     white-space: nowrap;
   }
   .page-nav-link:hover {
-    text-decoration: underline;
+    border-color: var(--confirm);
   }
   .operator-card .operator-row {
     margin-bottom: 0;
@@ -255,9 +301,9 @@
     background: var(--panel-alt);
     border: 1px solid var(--border);
     color: var(--text);
-    border-radius: 6px;
+    border-radius: 3px;
     padding: 10px 16px;
-    font-family: 'Oswald', 'Arial Narrow', sans-serif;
+    font-family: var(--font-display);
     font-size: 13px;
     font-weight: 600;
     letter-spacing: 0.03em;
@@ -318,17 +364,23 @@
   .header-left { display: flex; align-items: center; gap: 10px; }
   .header-left img { height: 32px; width: auto; display: block; }
   .version-badge {
-    font-family: ui-monospace, 'SF Mono', 'Roboto Mono', 'Consolas', monospace;
+    font-family: var(--font-data);
     font-size: 11px;
     font-weight: 700;
     color: var(--muted);
     background: var(--panel-alt);
     border: 1px solid var(--border);
     padding: 3px 9px;
-    border-radius: 4px;
+    border-radius: 2px;
     letter-spacing: 0.02em;
   }
-  h1 { font-size: 20px; font-weight: 600; margin: 0; }
+  h1 {
+    font-size: 20px;
+    font-weight: 600;
+    font-family: var(--font-display);
+    letter-spacing: 0.01em;
+    margin: 0;
+  }
   .sub { color: var(--muted); font-size: 13px; margin-bottom: 6px; }
   .location-tag {
     color: var(--muted);
@@ -342,24 +394,24 @@
     background: var(--panel-alt);
     border: 1px solid var(--border);
     color: var(--accent);
-    font-family: 'Oswald', 'Arial Narrow', sans-serif;
+    font-family: var(--font-display);
     font-size: 10px;
     font-weight: 700;
     letter-spacing: 0.05em;
     text-transform: uppercase;
     padding: 2px 8px;
-    border-radius: 20px;
+    border-radius: 3px;
   }
   .clock {
     background: var(--panel);
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: 3px;
     padding: 24px;
     text-align: center;
     margin-bottom: 16px;
   }
   .clock .time {
-    font-family: ui-monospace, 'SF Mono', 'Roboto Mono', 'Consolas', monospace;
+    font-family: var(--font-data);
     font-size: 48px;
     font-weight: 700;
     font-variant-numeric: tabular-nums;
@@ -375,7 +427,7 @@
     font-size: 12px;
     font-weight: 600;
     padding: 6px 14px;
-    border-radius: 8px;
+    border-radius: 3px;
   }
   .clock-toggle:hover { color: var(--text); border-color: var(--text); }
   .clock-toggle.paused { color: var(--accent2); border-color: var(--accent2); }
@@ -420,7 +472,7 @@
     justify-content: space-between;
     background: var(--panel);
     border: 1px solid var(--border);
-    border-radius: 5px;
+    border-radius: 2px;
     padding: 10px 14px;
     margin-bottom: 10px;
   }
@@ -433,7 +485,7 @@
     background: var(--bg);
     color: var(--text);
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: 3px;
     padding: 6px 10px;
     font-size: 13px;
     font-weight: 600;
@@ -442,7 +494,7 @@
     background: rgba(249,115,22,0.15);
     border: 1px solid var(--accent2);
     color: var(--accent2);
-    border-radius: 5px;
+    border-radius: 2px;
     padding: 10px 14px;
     font-size: 13px;
     font-weight: 700;
@@ -452,7 +504,7 @@
   .sessions-panel {
     background: var(--panel);
     border: 1px solid var(--border);
-    border-radius: 5px;
+    border-radius: 2px;
     margin-bottom: 16px;
     overflow: hidden;
   }
@@ -482,7 +534,8 @@
     margin-top: 2px;
   }
   .session-row-duration {
-    font-weight: 700;
+    font-family: var(--font-data);
+    font-weight: 600;
     color: var(--accent);
     font-variant-numeric: tabular-nums;
     text-align: right;
@@ -493,7 +546,7 @@
   .totals-box {
     background: var(--panel);
     border: 1px solid var(--border);
-    border-radius: 5px;
+    border-radius: 2px;
     padding: 12px 16px;
     text-align: center;
   }
@@ -506,7 +559,7 @@
     margin-bottom: 4px;
   }
   .totals-value {
-    font-family: ui-monospace, 'SF Mono', 'Roboto Mono', 'Consolas', monospace;
+    font-family: var(--font-data);
     font-size: 20px;
     font-weight: 700;
     color: var(--accent);
@@ -527,10 +580,13 @@
   }
   button {
     border: none;
-    border-radius: 5px;
+    border-radius: 2px;
     padding: 14px 12px;
-    font-size: 14px;
+    font-size: 13px;
     font-weight: 600;
+    font-family: var(--font-display);
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
     cursor: pointer;
     transition: transform 0.05s ease, opacity 0.15s ease;
   }
@@ -550,7 +606,7 @@
   #mainSessionTypeSelect {
     width: 100%;
     padding: 10px 12px;
-    border-radius: 8px;
+    border-radius: 3px;
     border: 1px solid var(--border);
     background: var(--bg);
     color: var(--text);
@@ -561,12 +617,12 @@
     margin-bottom: 10px;
   }
   .main-session-status {
-    font-family: 'Oswald', 'Arial Narrow', sans-serif;
+    font-family: var(--font-display);
     font-size: 13px;
     font-weight: 600;
     color: var(--muted);
     background: var(--panel-alt);
-    border-radius: 6px;
+    border-radius: 3px;
     padding: 10px 14px;
     margin-bottom: 14px;
     text-align: center;
@@ -579,7 +635,7 @@
     background: var(--panel);
     color: var(--accent2);
     border: 1px solid var(--accent2);
-    border-radius: 5px;
+    border-radius: 2px;
     padding: 12px;
     font-size: 14px;
     font-weight: 600;
@@ -594,7 +650,7 @@
     background: var(--panel);
     color: var(--muted);
     border: 1px solid var(--border);
-    border-radius: 5px;
+    border-radius: 2px;
     padding: 12px;
     font-size: 14px;
     font-weight: 600;
@@ -614,7 +670,7 @@
   .log {
     background: var(--panel);
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: 3px;
     overflow: hidden;
   }
   .log-header {
@@ -628,6 +684,11 @@
   }
   table { width: 100%; border-collapse: collapse; font-size: 14px; }
   th, td { text-align: left; padding: 10px 16px; }
+  td:nth-child(1), td:nth-child(2) {
+    font-family: var(--font-data);
+    font-size: 13px;
+    color: var(--muted);
+  }
   th {
     color: var(--muted);
     font-weight: 500;
@@ -642,7 +703,7 @@
     font-size: 11px;
     font-weight: 700;
     padding: 2px 8px;
-    border-radius: 6px;
+    border-radius: 3px;
     text-transform: uppercase;
   }
   .tag-active { background: rgba(94,234,212,0.15); color: var(--accent); }
@@ -658,7 +719,7 @@
     font-size: 11px;
     font-weight: 600;
     padding: 5px 10px;
-    border-radius: 6px;
+    border-radius: 3px;
     cursor: pointer;
     margin-right: 4px;
   }
@@ -671,7 +732,7 @@
   .edit-input {
     width: 100%;
     padding: 6px 8px;
-    border-radius: 6px;
+    border-radius: 3px;
     border: 1px solid var(--accent);
     background: var(--bg);
     color: var(--text);
@@ -680,7 +741,7 @@
   input[type="text"] {
     width: 100%;
     padding: 10px 12px;
-    border-radius: 8px;
+    border-radius: 3px;
     border: 1px solid var(--border);
     background: var(--bg);
     color: var(--text);
@@ -701,7 +762,7 @@
   #downtimeCategorySelect {
     width: 100%;
     padding: 10px 12px;
-    border-radius: 8px;
+    border-radius: 3px;
     border: 1px solid var(--border);
     background: var(--bg);
     color: var(--text);
@@ -719,14 +780,14 @@
   .session-progress-wrap {
     background: var(--panel);
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: 3px;
     padding: 12px 14px;
     margin-bottom: 14px;
   }
   .session-progress-label {
     display: flex;
     justify-content: space-between;
-    font-family: 'Oswald', 'Arial Narrow', sans-serif;
+    font-family: var(--font-display);
     font-size: 12px;
     font-weight: 600;
     letter-spacing: 0.03em;
@@ -740,7 +801,7 @@
   .session-progress-bar {
     display: flex;
     height: 10px;
-    border-radius: 5px;
+    border-radius: 2px;
     overflow: hidden;
     background: var(--bg);
   }
@@ -754,7 +815,7 @@
   .task-timer-block {
     background: var(--panel);
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: 3px;
     padding: 12px 14px;
     margin-bottom: 10px;
   }
@@ -762,7 +823,7 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    font-family: 'Oswald', 'Arial Narrow', sans-serif;
+    font-family: var(--font-display);
     font-size: 12px;
     font-weight: 600;
     letter-spacing: 0.04em;
@@ -773,7 +834,7 @@
   .task-timer-tag {
     background: var(--panel-alt);
     border: 1px solid var(--border);
-    border-radius: 20px;
+    border-radius: 3px;
     padding: 2px 10px;
     font-size: 10px;
     text-transform: none;
@@ -785,7 +846,7 @@
   .task-timer-block select {
     width: 100%;
     padding: 10px 12px;
-    border-radius: 8px;
+    border-radius: 3px;
     border: 1px solid var(--border);
     background: var(--bg);
     color: var(--text);
@@ -809,7 +870,7 @@
     overflow-y: auto;
     background: var(--bg);
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: 3px;
     margin: 10px 0;
   }
   .session-export-row {
@@ -844,7 +905,7 @@
   .my-booking-status {
     background: var(--panel-alt);
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: 3px;
     padding: 10px 14px;
     margin-bottom: 12px;
     font-size: 14px;
@@ -856,7 +917,7 @@
     font-weight: 600;
   }
   .active-bookings-header {
-    font-family: 'Oswald', 'Arial Narrow', sans-serif;
+    font-family: var(--font-display);
     font-size: 12px;
     font-weight: 600;
     letter-spacing: 0.04em;
@@ -869,7 +930,7 @@
     overflow-y: auto;
     background: var(--bg);
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: 3px;
     margin-bottom: 16px;
   }
   .active-booking-row {
@@ -902,7 +963,7 @@
     background: var(--accent);
     color: #2a1c02;
     border: none;
-    border-radius: 5px;
+    border-radius: 2px;
     padding: 6px 14px;
     font-size: 12px;
     font-weight: 700;
@@ -914,7 +975,7 @@
     padding-top: 14px;
   }
   .start-booking-header {
-    font-family: 'Oswald', 'Arial Narrow', sans-serif;
+    font-family: var(--font-display);
     font-size: 12px;
     font-weight: 600;
     letter-spacing: 0.04em;
@@ -930,12 +991,12 @@
   .target-row input[type="number"] {
     width: 70px;
     padding: 8px 10px;
-    border-radius: 6px;
+    border-radius: 3px;
     border: 1px solid var(--border);
     background: var(--bg);
     color: var(--text);
     font-size: 14px;
-    font-family: ui-monospace, 'SF Mono', 'Roboto Mono', 'Consolas', monospace;
+    font-family: var(--font-data);
   }
   .target-unit {
     font-size: 12px;
@@ -946,7 +1007,7 @@
   }
   .task-progress-bar {
     height: 8px;
-    border-radius: 4px;
+    border-radius: 2px;
     background: var(--bg);
     overflow: hidden;
   }
