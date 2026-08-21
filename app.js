@@ -924,18 +924,22 @@ let entries = [];
     setTimeout(() => { if (el.textContent === msg) el.textContent = ''; }, 2500);
   }
 
+  let currentLogTabFilter = '__all__';
+
   function renderLog() {
     renderSessionExportList();
     renderActiveBookingsList();
     const body = document.getElementById('logBody');
     const empty = document.getElementById('emptyState');
     const table = document.getElementById('logTable');
+    const tabBar = document.getElementById('logTabBar');
     const viewEntries = getViewingEntries();
     document.getElementById('entryCount').textContent = `${viewEntries.length} entr${viewEntries.length === 1 ? 'y' : 'ies'}`;
 
     if (viewEntries.length === 0) {
       table.style.display = 'none';
       empty.style.display = 'block';
+      if (tabBar) tabBar.innerHTML = '';
       empty.textContent = isViewingToday()
         ? "No entries yet — press a button above to start logging."
         : "No entries logged on this day.";
@@ -944,9 +948,9 @@ let entries = [];
     table.style.display = 'table';
     empty.style.display = 'none';
 
-    // Group by booking so a long day's log reads as distinct sections
-    // instead of one undifferentiated list — Dead Time (and any legacy
-    // entries with no bookingId) get their own group since they aren't
+    // Group by booking so you can flip between them like tabs, instead of
+    // scrolling through one long undifferentiated list — Dead Time (and any
+    // legacy entries with no bookingId) get their own tab since they aren't
     // part of any specific booking.
     const groups = {};
     viewEntries.forEach(e => {
@@ -959,7 +963,7 @@ let entries = [];
       const groupEntries = groups[key].sort((a, b) => (entrySortValue(b) - entrySortValue(a)) || (b.seq - a.seq));
       const mostRecentSortVal = entrySortValue(groupEntries[0]);
 
-      let title = 'Dead Time / Unassigned';
+      let title = 'Dead Time';
       let meta = '';
       if (key !== '__unassigned__') {
         const startEntry = [...groupEntries].reverse().find(e => /new session started/i.test(e.note || '')) || groupEntries[groupEntries.length - 1];
@@ -982,13 +986,35 @@ let entries = [];
       return { key, groupEntries, mostRecentSortVal, title, meta };
     }).sort((a, b) => b.mostRecentSortVal - a.mostRecentSortVal);
 
-    body.innerHTML = groupList.map(g => `
+    // If the tab someone was on no longer exists (e.g. its only entry got
+    // deleted), fall back to "All" instead of silently showing nothing.
+    if (currentLogTabFilter !== '__all__' && !groupList.some(g => g.key === currentLogTabFilter)) {
+      currentLogTabFilter = '__all__';
+    }
+
+    if (tabBar) {
+      const totalCount = viewEntries.length;
+      const tabs = [{ key: '__all__', title: 'All', count: totalCount }]
+        .concat(groupList.map(g => ({ key: g.key, title: g.title, count: g.groupEntries.length })));
+      tabBar.innerHTML = tabs.map(t => `
+        <button class="log-tab ${currentLogTabFilter === t.key ? 'active' : ''}" onclick="switchLogTab('${t.key}')">
+          ${escapeHtml(t.title)} <span class="log-tab-count">${t.count}</span>
+        </button>
+      `).join('');
+    }
+
+    const visibleGroups = (currentLogTabFilter === '__all__')
+      ? groupList
+      : groupList.filter(g => g.key === currentLogTabFilter);
+
+    body.innerHTML = visibleGroups.map(g => `
+      ${currentLogTabFilter === '__all__' ? `
       <tr class="log-group-header">
         <td colspan="6">
           <span class="log-group-title">${escapeHtml(g.title)}</span>
           <span class="log-group-meta">${g.meta}</span>
         </td>
-      </tr>
+      </tr>` : ''}
       ${g.groupEntries.map(e => `
       <tr data-id="${e.id}">
         <td>${formatDateShort(e.date)}</td>
@@ -1005,6 +1031,11 @@ let entries = [];
       </tr>
       `).join('')}
     `).join('');
+  }
+
+  function switchLogTab(key) {
+    currentLogTabFilter = key;
+    renderLog();
   }
 
   function startEdit(id) {
