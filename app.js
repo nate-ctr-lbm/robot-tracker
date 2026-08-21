@@ -708,7 +708,7 @@ let entries = [];
     if (followingToday && viewingDate !== todayDateString()) {
       viewingDate = todayDateString();
       updateDateNavUI();
-      performReset("New day — counters reset. Yesterday's log is still available via the date picker.", false);
+      performReset("New day — counters reset. Yesterday's log is still available via the date picker.");
     }
 
     const viewEntries = getViewingEntries();
@@ -2072,11 +2072,14 @@ let entries = [];
   }
 
   function dedupeEntries() {
-    // Remove exact duplicate rows (same date + timestamp + type + note) that
-    // can happen when the same export gets imported more than once.
+    // Remove exact duplicate rows that can happen when the same export
+    // gets imported more than once. Includes operator and bookingId (not
+    // just date/time/type/note) so two different people's concurrent
+    // bookings that happen to share boilerplate text at the same second
+    // never get mistaken for duplicates of each other.
     const seen = new Set();
     entries = entries.filter(e => {
-      const key = `${e.date || ''}|${e.timestamp}|${e.type}|${e.note}`;
+      const key = `${e.date || ''}|${e.timestamp}|${e.type}|${e.note}|${e.operator || ''}|${e.bookingId || ''}`;
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
@@ -2253,9 +2256,13 @@ let entries = [];
     return d;
   }
 
-  function performReset(statusMessage, resetOperator) {
+  function performReset(statusMessage) {
     // Resets today's LIVE tracking counters only. Never deletes any entries —
     // history is preserved and stays browsable via the date navigator.
+    // Deliberately does NOT touch currentOperator — resetting task numbering
+    // has no logical connection to who's currently operating, and silently
+    // reverting to a default operator would undermine the whole point of
+    // requiring an explicit "who's operating" choice at login.
     currentTaskNumber = 1;
     taskInProgress = false;
     taskStartTimestamp = null;
@@ -2272,10 +2279,6 @@ let entries = [];
     // today's task numbering shouldn't kick anyone off an active booking.
     lastActivityTime = new Date();
     currentTargetMinutes = null;
-    if (resetOperator) {
-      currentOperator = 'Ajar';
-      syncOperatorSelect();
-    }
     const descInput = document.getElementById('taskDescInput');
     descInput.value = '';
     descInput.disabled = false;
@@ -2305,12 +2308,12 @@ let entries = [];
     const todayEntries = getTodayEntries();
     if (todayEntries.length === 0) {
       showStatus('Starting fresh — counters reset');
-      performReset('Counters reset for today', true);
+      performReset('Counters reset for today');
       return;
     }
     if (confirm("Export today's log, then reset today's counters for a fresh start? (Nothing is deleted — you can still browse today via the date picker.)")) {
       exportCSV();
-      performReset('Exported. Counters reset for today', true);
+      performReset('Exported. Counters reset for today');
     }
   }
 
