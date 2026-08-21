@@ -765,7 +765,7 @@ let entries = [];
       return;
     }
 
-    const viewEntries = getViewingEntries();
+    const viewEntries = getViewingEntries().filter(e => e.bookingId === myBookingId);
     if (viewEntries.length === 0) {
       document.getElementById('sessionProgressOperator').textContent = currentOperator || '—';
       document.getElementById('sessionProgressElapsed').textContent = 'Session not started yet';
@@ -775,17 +775,7 @@ let entries = [];
       return;
     }
 
-    const sorted = viewEntries.slice().sort((a, b) => (entrySortValue(a) - entrySortValue(b)) || (a.seq - b.seq));
-    const segments = [];
-    let segStart = 0;
-    sorted.forEach((e, idx) => {
-      if (e.type === 'Session' && /new session started/i.test(e.note || '')) {
-        segments.push(sorted.slice(segStart, idx));
-        segStart = idx;
-      }
-    });
-    segments.push(sorted.slice(segStart));
-    const currentSeg = segments[segments.length - 1];
+    const currentSeg = viewEntries.slice().sort((a, b) => (entrySortValue(a) - entrySortValue(b)) || (a.seq - b.seq));
     if (!currentSeg || currentSeg.length === 0) {
       document.getElementById('sessionProgressOperator').textContent = currentOperator || '—';
       document.getElementById('sessionProgressElapsed').textContent = 'Session not started yet';
@@ -801,12 +791,11 @@ let entries = [];
     if (totalElapsed <= 0) totalElapsed = 1;
 
     const downtimeSecs = computeCategorySecondsInSegment(currentSeg, 'downtime');
-    const lunchSecs = computeCategorySecondsInSegment(currentSeg, 'lunch');
-    const activeSecs = Math.max(0, totalElapsed - downtimeSecs - lunchSecs);
+    const activeSecs = Math.max(0, totalElapsed - downtimeSecs);
 
     document.getElementById('segActive').style.width = (activeSecs / totalElapsed * 100) + '%';
     document.getElementById('segDowntime').style.width = (downtimeSecs / totalElapsed * 100) + '%';
-    document.getElementById('segLunch').style.width = (lunchSecs / totalElapsed * 100) + '%';
+    document.getElementById('segLunch').style.width = '0%';
     document.getElementById('sessionProgressOperator').textContent = currentOperator || '—';
     document.getElementById('sessionProgressElapsed').textContent = formatDuration(totalElapsed) + ' elapsed';
   }
@@ -1071,6 +1060,10 @@ let entries = [];
     if (idx === -1) return null;
     const startPattern = new RegExp(`task\\s+${taskNum}\\s+started`, 'i');
     for (let i = idx - 1; i >= 0; i--) {
+      // Must be the SAME booking — otherwise, with concurrent bookings that
+      // happen to share a task number (e.g. two separate "Task 1"s),
+      // this could pair with a completely different person's entry.
+      if (sorted[i].bookingId !== entry.bookingId) continue;
       if (sorted[i].type === 'Active' && startPattern.test(sorted[i].note || '')) {
         return sorted[i];
       }
@@ -1328,6 +1321,30 @@ let entries = [];
     return '';
   }
 
+  function computeLunchBookingLog(sortedEntries) {
+    const byBooking = {};
+    sortedEntries.forEach(e => {
+      if (e.type !== 'Session' || !e.bookingId) return;
+      if (!byBooking[e.bookingId]) byBooking[e.bookingId] = [];
+      byBooking[e.bookingId].push(e);
+    });
+
+    const events = [];
+    Object.values(byBooking).forEach(group => {
+      const seg = group.sort((a, b) => (entrySortValue(a) - entrySortValue(b)) || (a.seq - b.seq));
+      const startEntry = seg.find(e => /new session started/i.test(e.note || '') || /^joined booking/i.test(e.note || ''));
+      if (!startEntry || !/—\s*Lunch\s*(\(|$)/i.test(startEntry.note || '')) return;
+      const endEntry = [...seg].reverse().find(e => /^session ended/i.test(e.note || ''));
+      const startSec = timeToMinutes(seg[0].timestamp);
+      const endSec = endEntry ? timeToMinutes(seg[seg.length - 1].timestamp) : timeToMinutes(seg[seg.length - 1].timestamp);
+      let diff = endSec - startSec;
+      if (diff < 0) diff += 24 * 3600;
+      const operators = [...new Set(seg.map(e => e.operator).filter(Boolean))];
+      events.push({ operator: operators.join(', ') || '', duration: formatDuration(diff) });
+    });
+    return events;
+  }
+
   function computeDurationLog(sortedEntries, regexWord, entryType) {
     entryType = entryType || regexWord;
     const events = [];
@@ -1421,28 +1438,36 @@ let entries = [];
   }
 
   function computeSessionSummaries(sortedEntries) {
-    const segments = [];
-    let segStart = 0;
-    sortedEntries.forEach((e, idx) => {
-      if (e.type === 'Session' && /new session started/i.test(e.note || '')) {
-        segments.push(sortedEntries.slice(segStart, idx));
-        segStart = idx;
-      }
+    // Group by actual bookingId — same fix already applied to renderSessionsPanel.
+    // Naive chronological splitting (on any "new session started" marker)
+    // would incorrectly merge or split concurrent bookings that happen on
+    // the same day, producing wrong durations in the summary report.
+    const byBooking = {};
+    sortedEntries.forEach(e => {
+      if (e.type === 'DeadTime' || !e.bookingId) return; // not a booking
+      if (!byBooking[e.bookingId]) byBooking[e.bookingId] = [];
+      byBooking[e.bookingId].push(e);
     });
-    segments.push(sortedEntries.slice(segStart));
+
+    const bookingIds = Object.keys(byBooking);
+    const segments = bookingIds
+      .map(id => byBooking[id].sort((a, b) => (entrySortValue(a) - entrySortValue(b)) || (a.seq - b.seq)))
+      .sort((a, b) => entrySortValue(a[0]) - entrySortValue(b[0]));
 
     return segments.filter(s => s.length > 0).map((seg, i) => {
       const startTs = seg[0].timestamp;
       const lastTs = seg[seg.length - 1].timestamp;
-      const isLast = (i === segments.length - 1);
+      const endEntry = [...seg].reverse().find(e => /^session ended/i.test(e.note || ''));
+      const isOngoing = !endEntry;
       const startSec = timeToMinutes(startTs);
       const lastSec = timeToMinutes(lastTs);
       let rawSpan = lastSec - startSec;
       if (rawSpan < 0) rawSpan += 24 * 3600;
-      const lunchSecs = computeCategorySecondsInSegment(seg, 'lunch');
       const downtimeSecs = computeCategorySecondsInSegment(seg, 'downtime');
 
-      let withDowntime = rawSpan - lunchSecs; // session span excludes lunch, but includes downtime
+      // No lunch subtraction — Lunch is its own separate booking now, so
+      // it was never part of this segment's own span to begin with.
+      let withDowntime = rawSpan;
       if (withDowntime < 0) withDowntime = 0;
       let withoutDowntime = withDowntime - downtimeSecs;
       if (withoutDowntime < 0) withoutDowntime = 0;
@@ -1452,7 +1477,7 @@ let entries = [];
         number: i + 1,
         operators: operators.join(', ') || '—',
         start: startTs,
-        end: isLast ? (sessionEnded ? lastTs : 'ongoing') : lastTs,
+        end: isOngoing ? 'ongoing' : lastTs,
         durationWithDowntimeSeconds: withDowntime,
         durationWithoutDowntimeSeconds: withoutDowntime,
         downtimeSeconds: downtimeSecs,
@@ -1467,17 +1492,18 @@ let entries = [];
 
   function computeDowntimeByCategory(sortedEntries) {
     const totals = {};
-    let openCategory = null;
+    const openCategories = {};
     sortedEntries.forEach(e => {
       if (e.type !== 'Downtime') return;
+      const key = `${e.bookingId || '__none__'}:${e.operator || '__none__'}`;
       const note = e.note || '';
       if (/downtime\s+started/i.test(note)) {
-        openCategory = e.category || 'Unspecified';
+        openCategories[key] = e.category || 'Unspecified';
       } else if (/downtime\s+(ended|completed)/i.test(note)) {
-        const category = e.category || openCategory || 'Unspecified';
+        const category = e.category || openCategories[key] || 'Unspecified';
         const dur = (typeof e.durationSeconds === 'number') ? e.durationSeconds : 0;
         totals[category] = (totals[category] || 0) + dur;
-        openCategory = null;
+        delete openCategories[key];
       }
     });
     return Object.entries(totals)
@@ -1492,27 +1518,30 @@ let entries = [];
     sortedEntries.forEach(e => {
       const op = e.operator || 'Unknown';
       if (!stats[op]) stats[op] = { active: 0, downtime: 0 };
+      const bk = e.bookingId || '__none__';
       const note = e.note || '';
       let m = note.match(/task\s+(\d+)\s+started/i);
-      if (m) { openTaskStarts[m[1]] = { sec: timeToMinutes(e.timestamp), op }; return; }
+      if (m) { openTaskStarts[`${bk}:${op}:${m[1]}`] = { sec: timeToMinutes(e.timestamp), op }; return; }
       m = note.match(/task\s+(\d+)\s+(completed|compled)/i);
       if (m) {
-        const started = openTaskStarts[m[1]];
+        const key = `${bk}:${op}:${m[1]}`;
+        const started = openTaskStarts[key];
         if (started) {
           const dur = (typeof e.durationSeconds === 'number') ? e.durationSeconds : Math.max(0, timeToMinutes(e.timestamp) - started.sec);
           stats[started.op].active += dur;
         }
-        delete openTaskStarts[m[1]];
+        delete openTaskStarts[key];
         return;
       }
-      if (/downtime\s+started/i.test(note)) { openDowntimeStarts.current = { sec: timeToMinutes(e.timestamp), op }; return; }
+      if (/downtime\s+started/i.test(note)) { openDowntimeStarts[`${bk}:${op}`] = { sec: timeToMinutes(e.timestamp), op }; return; }
       if (/downtime\s+(ended|completed)/i.test(note)) {
-        const started = openDowntimeStarts.current;
+        const key = `${bk}:${op}`;
+        const started = openDowntimeStarts[key];
         if (started) {
           const dur = (typeof e.durationSeconds === 'number') ? e.durationSeconds : Math.max(0, timeToMinutes(e.timestamp) - started.sec);
           stats[started.op].downtime += dur;
         }
-        openDowntimeStarts.current = null;
+        delete openDowntimeStarts[key];
         return;
       }
     });
@@ -1525,19 +1554,21 @@ let entries = [];
 
   function computeDowntimeByHour(sortedEntries) {
     const byHour = {};
-    let openStart = null;
+    const openStarts = {};
     sortedEntries.forEach(e => {
       if (e.type !== 'Downtime') return;
+      const key = `${e.bookingId || '__none__'}:${e.operator || '__none__'}`;
       const note = e.note || '';
       if (/downtime\s+started/i.test(note)) {
-        openStart = timeToMinutes(e.timestamp);
+        openStarts[key] = timeToMinutes(e.timestamp);
       } else if (/downtime\s+(ended|completed)/i.test(note)) {
+        const openStart = openStarts[key];
         if (openStart != null) {
           const dur = (typeof e.durationSeconds === 'number') ? e.durationSeconds : Math.max(0, timeToMinutes(e.timestamp) - openStart);
           const hour = Math.floor(openStart / 3600);
           byHour[hour] = (byHour[hour] || 0) + dur;
         }
-        openStart = null;
+        delete openStarts[key];
       }
     });
     return Object.entries(byHour)
@@ -1572,7 +1603,7 @@ let entries = [];
 
     const sessionSummaries = computeSessionSummaries(sorted);
     const downtimeLog = computeDurationLog(sorted, 'downtime');
-    const lunchLog = computeDurationLog(sorted, 'lunch');
+    const lunchLog = computeLunchBookingLog(sorted);
     const deadTimeLog = computeDurationLog(sorted, 'dead time', 'DeadTime');
     const downtimeByCategory = computeDowntimeByCategory(sorted);
     const operatorStats = computeOperatorStats(sorted);
@@ -1707,9 +1738,9 @@ let entries = [];
 
   function exportCSV() {
     if (entries.length === 0) { showStatus('Nothing to export yet'); return; }
-    let csv = 'Date,Time,Type,Operator,Category,Note\n';
+    let csv = 'Date,Time,Type,Operator,Category,Note,Booking ID\n';
     entries.forEach(e => {
-      csv += `"${e.date || ''}","${e.timestamp}","${e.type}","${(e.operator || '').replace(/"/g, '""')}","${(e.category || '').replace(/"/g, '""')}","${(e.note || '').replace(/"/g, '""')}"\n`;
+      csv += `"${e.date || ''}","${e.timestamp}","${e.type}","${(e.operator || '').replace(/"/g, '""')}","${(e.category || '').replace(/"/g, '""')}","${(e.note || '').replace(/"/g, '""')}","${e.bookingId || ''}"\n`;
     });
     const filename = buildDatedFilename('robot_use_log', 'csv');
     const blob = new Blob([csv], { type: 'text/csv' });
@@ -1903,11 +1934,11 @@ let entries = [];
     const selectedSessions = sessions.filter(s => selectedIds.has(s.id));
     const selectedEntries = selectedSessions.flatMap(s => s.entries);
 
-    let csv = 'Date,Time,Type,Operator,Category,Note\n';
+    let csv = 'Date,Time,Type,Operator,Category,Note,Booking ID\n';
     selectedEntries
       .sort((a, b) => (entrySortValue(a) - entrySortValue(b)) || (a.seq - b.seq))
       .forEach(e => {
-        csv += `"${e.date || ''}","${e.timestamp}","${e.type}","${(e.operator || '').replace(/"/g, '""')}","${(e.category || '').replace(/"/g, '""')}","${(e.note || '').replace(/"/g, '""')}"\n`;
+        csv += `"${e.date || ''}","${e.timestamp}","${e.type}","${(e.operator || '').replace(/"/g, '""')}","${(e.category || '').replace(/"/g, '""')}","${(e.note || '').replace(/"/g, '""')}","${e.bookingId || ''}"\n`;
       });
 
     const filename = `robot_use_log_selected_sessions_${selectedSessions.length}.csv`;
@@ -1944,6 +1975,7 @@ let entries = [];
             const operatorIdx = header.indexOf('operator');
             const dateIdx = header.indexOf('date');
             const categoryIdx = header.indexOf('category');
+            const bookingIdIdx = header.indexOf('booking id');
             if (timeIdx === -1 || typeIdx === -1) { resolve(0); return; }
 
             let imported = 0;
@@ -1956,6 +1988,7 @@ let entries = [];
               // to today's date so old imports still sort sensibly.
               const rowDate = (dateIdx !== -1 && row[dateIdx]) ? row[dateIdx] : new Date().toLocaleDateString('en-CA');
               const category = categoryIdx !== -1 ? (row[categoryIdx] || null) : null;
+              const bookingId = bookingIdIdx !== -1 ? (row[bookingIdIdx] || null) : null;
               entries.push({
                 id: `local_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
                 seq: nextSeq++,
@@ -1965,6 +1998,7 @@ let entries = [];
                 note: note,
                 operator: operator,
                 category: category,
+                bookingId: bookingId,
                 durationSeconds: parseDurationFromNote(note)
               });
               imported++;
