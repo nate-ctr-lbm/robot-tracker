@@ -572,7 +572,6 @@ let entries = [];
 
     let diff = endSeconds - firstSeconds;
     if (diff < 0) diff += 24 * 3600; // handle crossing midnight
-    diff -= computeLunchSecondsInSegment(currentSessionEntries);
     if (diff < 0) diff = 0;
     display.textContent = formatDuration(diff);
 
@@ -609,41 +608,57 @@ let entries = [];
       return;
     }
 
-    // Split the log into segments at each "new session started" marker.
-    const segments = [];
-    let segStart = 0;
-    sortedEntries.forEach((e, idx) => {
-      if (e.type === 'Session' && /new session started/i.test(e.note || '')) {
-        segments.push(sortedEntries.slice(segStart, idx));
-        segStart = idx;
-      }
+    // Group by actual bookingId — NOT naive chronological splitting, which
+    // would incorrectly merge multiple concurrent bookings into one giant
+    // segment, or split a single booking apart if someone else's booking
+    // started in between.
+    const byBooking = {};
+    sortedEntries.forEach(e => {
+      if (e.type === 'DeadTime' || !e.bookingId) return; // Dead Time isn't a booking
+      if (!byBooking[e.bookingId]) byBooking[e.bookingId] = [];
+      byBooking[e.bookingId].push(e);
     });
-    segments.push(sortedEntries.slice(segStart));
 
-    if (segments.length < 2) {
-      // Only one session so far — no need to clutter the UI with a
+    const bookingIds = Object.keys(byBooking);
+    if (bookingIds.length < 2) {
+      // Only one booking so far today — no need to clutter the UI with a
       // breakdown of just itself; the totals row already covers it.
       panel.style.display = 'none';
       return;
     }
 
+    // Sort bookings by their own start time so the list reads chronologically.
+    const bookingSummaries = bookingIds.map(bookingId => {
+      const seg = byBooking[bookingId].sort((a, b) => (entrySortValue(a) - entrySortValue(b)) || (a.seq - b.seq));
+      const startEntry = seg.find(e => /new session started/i.test(e.note || '')) || seg[0];
+      const endEntry = [...seg].reverse().find(e => /^session ended/i.test(e.note || ''));
+
+      const note = startEntry.note || '';
+      const noteClean = note.replace(/\s*\(Policy #\d+\)\s*$/, '').replace(/\s*\(UC #\d+\)\s*$/, '');
+      const typeMatch = noteClean.match(/—\s*(.+)$/);
+      const type = typeMatch ? typeMatch[1].trim() : 'Unknown';
+
+      return { bookingId, seg, startEntry, endEntry, type,
+               startSortVal: entrySortValue(seg[0]) };
+    }).sort((a, b) => a.startSortVal - b.startSortVal);
+
     panel.style.display = 'block';
     const now = new Date();
     const nowSeconds = now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds();
 
-    list.innerHTML = segments.map((seg, i) => {
-      if (seg.length === 0) return '';
-      const startTs = seg[0].timestamp;
-      const lastTs = seg[seg.length - 1].timestamp;
-      const isLastSegment = (i === segments.length - 1);
-      const ongoing = isLastSegment && !sessionEnded;
+    list.innerHTML = bookingSummaries.map((b, i) => {
+      const startTs = b.seg[0].timestamp;
+      const lastTs = b.seg[b.seg.length - 1].timestamp;
+      const ongoing = !b.endEntry;
 
       const startSec = timeToMinutes(startTs);
       const lastSec = timeToMinutes(lastTs);
       const endSec = ongoing ? Math.max(lastSec, nowSeconds) : lastSec;
       let diff = endSec - startSec;
       if (diff < 0) diff += 24 * 3600;
-      diff -= computeLunchSecondsInSegment(seg);
+      // No lunch subtraction here — Lunch is its own separate booking now,
+      // so it already shows as its own row rather than needing to be
+      // carved out of some other booking's span.
       if (diff < 0) diff = 0;
 
       const endLabel = ongoing ? 'ongoing' : lastTs;
@@ -651,7 +666,7 @@ let entries = [];
       return `
         <div class="session-row">
           <div>
-            <div class="session-row-name">Session ${i + 1}</div>
+            <div class="session-row-name">Booking ${i + 1} — ${escapeHtml(b.type)}</div>
             <div class="session-row-range">${startTs} → ${endLabel}</div>
           </div>
           <div class="session-row-duration ${ongoing ? 'ongoing' : ''}">${formatDuration(diff)}</div>
