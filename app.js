@@ -1196,7 +1196,6 @@ let entries = [];
       if (!el) return;
       if (el.tagName === 'BUTTON') {
         el.disabled = !enabled;
-        el.style.opacity = enabled ? '1' : '0.5';
         el.style.cursor = enabled ? 'pointer' : 'not-allowed';
       } else {
         // Don't force-enable inputs that are intentionally locked mid-task/downtime
@@ -2297,7 +2296,6 @@ let entries = [];
         return;
       }
       btn.disabled = !enabled;
-      btn.style.opacity = enabled ? '1' : '0.5';
       btn.style.cursor = enabled ? 'pointer' : 'not-allowed';
     });
   }
