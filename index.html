@@ -66,7 +66,39 @@
     📖 Viewing history — read-only. Logging is locked to today. <button onclick="jumpToToday()">Go to Today</button>
   </div>
 
-  <div class="two-col-grid">
+  <div class="view-toggle-row">
+    <button class="view-toggle-btn active" id="viewToggleKpiBtn" onclick="setViewMode('kpi')">KPI View</button>
+    <button class="view-toggle-btn" id="viewToggleGridBtn" onclick="setViewMode('grid')">Grid View</button>
+  </div>
+
+  <div class="kpi-bar" id="kpiBar">
+    <div class="kpi-box">
+      <div class="kpi-label" id="sessionDurationLabelKpi">Booking Duration</div>
+      <div class="kpi-value" id="sessionDurationDisplayKpi">0m 0s</div>
+    </div>
+    <div class="kpi-box">
+      <div class="kpi-label">Total Active Time</div>
+      <div class="kpi-value" id="totalActiveDisplayKpi">0m 0s</div>
+    </div>
+    <div class="kpi-box">
+      <div class="kpi-label">Total Downtime</div>
+      <div class="kpi-value" id="totalDowntimeDisplayKpi">0m 0s</div>
+    </div>
+    <div class="kpi-box">
+      <div class="kpi-label">Total Lunch</div>
+      <div class="kpi-value" id="totalLunchDisplayKpi">0m 0s</div>
+    </div>
+    <div class="kpi-box">
+      <div class="kpi-label">Total Dead Time</div>
+      <div class="kpi-value" id="totalDeadTimeDisplayKpi">0m 0s</div>
+    </div>
+    <div class="kpi-box">
+      <div class="kpi-label">Tasks Completed</div>
+      <div class="kpi-value" id="totalTasksDisplayKpi">0</div>
+    </div>
+  </div>
+
+  <div class="two-col-grid" id="twoColGrid">
   <div class="main-column">
   <section class="card operator-card">
     <div class="section-label">Operator on Duty</div>
@@ -190,7 +222,7 @@
 
     <div class="downtime-alert" id="downtimeAlert" style="display:none;"></div>
 
-    <div class="totals-row totals-row-6">
+    <div class="totals-row totals-row-6" id="inCardTotalsRow">
       <div class="totals-box">
         <div class="totals-label" id="sessionDurationLabel">Session 1 Duration</div>
         <div class="totals-value" id="sessionDurationDisplay">0m 0s</div>

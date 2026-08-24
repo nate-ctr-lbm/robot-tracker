@@ -141,6 +141,74 @@
       grid-template-columns: 1fr;
     }
   }
+  .view-toggle-row {
+    display: flex;
+    gap: 8px;
+    margin: 16px 0 12px;
+  }
+  .view-toggle-btn {
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    color: var(--muted);
+    border-radius: 3px;
+    padding: 8px 16px;
+    font-size: 12px;
+    font-family: var(--font-display);
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    cursor: pointer;
+  }
+  .view-toggle-btn:hover {
+    border-color: var(--border-bright);
+    color: var(--text);
+  }
+  .view-toggle-btn.active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #05221c;
+  }
+  .kpi-bar {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 12px;
+    margin-bottom: 20px;
+  }
+  .kpi-box {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 16px;
+    text-align: center;
+  }
+  .kpi-label {
+    font-family: var(--font-display);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 6px;
+  }
+  .kpi-value {
+    font-family: var(--font-data);
+    font-size: 26px;
+    font-weight: 600;
+    color: var(--accent);
+  }
+  /* Widget grid mode: flatten the two functional columns via display:contents
+     so every card becomes a direct, uniformly-sized item in one grid,
+     instead of two separate stacked columns of differently-sized panels. */
+  #twoColGrid.grid-mode {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 20px;
+    align-items: start;
+  }
+  #twoColGrid.grid-mode .main-column,
+  #twoColGrid.grid-mode .side-column {
+    display: contents;
+  }
   .card {
     background: var(--panel);
     border: 1px solid var(--border);

@@ -501,14 +501,21 @@ let entries = [];
     const sorted = getViewingEntries().sort((a, b) => (entrySortValue(a) - entrySortValue(b)) || (a.seq - b.seq));
     const { totalSeconds, tasksCompleted, totalDowntimeSeconds, totalLunchSeconds, totalDeadTimeSeconds } = computeTotalsForEntries(sorted);
 
-    document.getElementById('totalActiveDisplay').textContent = formatDuration(totalSeconds);
-    document.getElementById('totalDowntimeDisplay').textContent = formatDuration(totalDowntimeSeconds);
-    document.getElementById('totalLunchDisplay').textContent = formatDuration(totalLunchSeconds);
-    if (document.getElementById('totalDeadTimeDisplay')) {
-      document.getElementById('totalDeadTimeDisplay').textContent = formatDuration(totalDeadTimeSeconds);
+    // Writes to both the in-card display AND its KPI-bar mirror, so both
+    // view modes always stay in sync regardless of which is visible.
+    function setBoth(id, text) {
+      const el = document.getElementById(id);
+      if (el) el.textContent = text;
+      const kpiEl = document.getElementById(id + 'Kpi');
+      if (kpiEl) kpiEl.textContent = text;
     }
+
+    setBoth('totalActiveDisplay', formatDuration(totalSeconds));
+    setBoth('totalDowntimeDisplay', formatDuration(totalDowntimeSeconds));
+    setBoth('totalLunchDisplay', formatDuration(totalLunchSeconds));
+    setBoth('totalDeadTimeDisplay', formatDuration(totalDeadTimeSeconds));
     updateSessionDuration(sorted);
-    document.getElementById('totalTasksDisplay').textContent = tasksCompleted;
+    setBoth('totalTasksDisplay', tasksCompleted);
     updateCurrentStatusPill();
     saveToStorage();
   }
@@ -540,12 +547,22 @@ let entries = [];
   }
 
   function updateSessionDuration(sortedEntries) {
-    const display = document.getElementById('sessionDurationDisplay');
-    const label = document.getElementById('sessionDurationLabel');
+    function setDisplay(text) {
+      const el = document.getElementById('sessionDurationDisplay');
+      if (el) el.textContent = text;
+      const kpiEl = document.getElementById('sessionDurationDisplayKpi');
+      if (kpiEl) kpiEl.textContent = text;
+    }
+    function setLabel(text) {
+      const el = document.getElementById('sessionDurationLabel');
+      if (el) el.textContent = text;
+      const kpiEl = document.getElementById('sessionDurationLabelKpi');
+      if (kpiEl) kpiEl.textContent = text;
+    }
 
     if (!sortedEntries || sortedEntries.length === 0) {
-      display.textContent = '0m 0s';
-      label.textContent = 'Session 1 Duration';
+      setDisplay('0m 0s');
+      setLabel('Session 1 Duration');
       return;
     }
 
@@ -556,15 +573,15 @@ let entries = [];
     const myEntries = sortedEntries.filter(e => e.bookingId === myBookingId);
 
     if (!myBookingId || myEntries.length === 0) {
-      display.textContent = '0m 0s';
-      label.textContent = 'Booking Duration';
+      setDisplay('0m 0s');
+      setLabel('Booking Duration');
       document.getElementById('downtimeAlert').style.display = 'none';
       renderSessionsPanel(sortedEntries);
       return;
     }
 
     const currentSessionEntries = myEntries;
-    label.textContent = 'Current Booking Duration';
+    setLabel('Current Booking Duration');
 
     const firstSeconds = timeToMinutes(currentSessionEntries[0].timestamp);
     const lastEntrySeconds = timeToMinutes(currentSessionEntries[currentSessionEntries.length - 1].timestamp);
@@ -579,7 +596,7 @@ let entries = [];
     let diff = endSeconds - firstSeconds;
     if (diff < 0) diff += 24 * 3600; // handle crossing midnight
     if (diff < 0) diff = 0;
-    display.textContent = formatDuration(diff);
+    setDisplay(formatDuration(diff));
 
     updateDowntimeAlert(currentSessionEntries, diff);
     renderSessionsPanel(sortedEntries);
@@ -804,6 +821,39 @@ let entries = [];
     document.getElementById('segLunch').style.width = '0%';
     document.getElementById('sessionProgressOperator').textContent = currentOperator || '—';
     document.getElementById('sessionProgressElapsed').textContent = formatDuration(totalElapsed) + ' elapsed';
+  }
+
+  const VIEW_MODE_KEY = 'walden_robot_tracker_view_mode';
+
+  function setViewMode(mode) {
+    const kpiBar = document.getElementById('kpiBar');
+    const inCardTotals = document.getElementById('inCardTotalsRow');
+    const twoColGrid = document.getElementById('twoColGrid');
+    const kpiBtn = document.getElementById('viewToggleKpiBtn');
+    const gridBtn = document.getElementById('viewToggleGridBtn');
+    if (!kpiBar || !twoColGrid) return;
+
+    if (mode === 'grid') {
+      kpiBar.style.display = 'none';
+      if (inCardTotals) inCardTotals.style.display = 'grid';
+      twoColGrid.classList.add('grid-mode');
+      if (kpiBtn) kpiBtn.classList.remove('active');
+      if (gridBtn) gridBtn.classList.add('active');
+    } else {
+      mode = 'kpi';
+      kpiBar.style.display = 'grid';
+      if (inCardTotals) inCardTotals.style.display = 'none';
+      twoColGrid.classList.remove('grid-mode');
+      if (kpiBtn) kpiBtn.classList.add('active');
+      if (gridBtn) gridBtn.classList.remove('active');
+    }
+    try { localStorage.setItem(VIEW_MODE_KEY, mode); } catch (err) { /* ignore */ }
+  }
+
+  function restoreViewMode() {
+    let saved = 'kpi';
+    try { saved = localStorage.getItem(VIEW_MODE_KEY) || 'kpi'; } catch (err) { /* ignore */ }
+    setViewMode(saved);
   }
 
   function toggleClock() {
@@ -2973,6 +3023,7 @@ let entries = [];
     updateTotals();
     renderLog();
     syncOperatorSelect();
+    restoreViewMode();
     const descInputInit = document.getElementById('taskDescInput');
     descInputInit.value = currentTaskDescription || '';
     descInputInit.disabled = taskInProgress;
