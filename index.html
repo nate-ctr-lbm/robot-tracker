@@ -106,6 +106,7 @@
         <option value="UC Data Collect" class="opt-data">UC Data Collect</option>
         <option value="Policy Training" class="opt-policy">Policy Training</option>
         <option value="Lunch" class="opt-data opt-policy">Lunch</option>
+        <option value="Household Bridge Data Collection" class="opt-data">Household Bridge Data Collection</option>
         <option value="Other">Other...</option>
       </select>
       <input type="text" id="mainSessionOtherInput" placeholder="Describe the type" style="display:none;" />
@@ -118,6 +119,16 @@
         <label for="policyNumberInput">Policy #</label>
         <input type="number" id="policyNumberInput" min="1" placeholder="e.g. 1, 2, 3" />
         <span class="target-unit">(optional)</span>
+      </div>
+      <div class="target-row" id="hbTaskNumberRow" style="display:none;">
+        <label for="hbTaskNumberInput">Task #</label>
+        <input type="number" id="hbTaskNumberInput" min="1" placeholder="e.g. 3" oninput="handleHbTaskNumberChange()" />
+        <span class="target-unit">(required)</span>
+      </div>
+      <div class="target-row" id="hbTargetHoursRow" style="display:none;">
+        <label for="hbTargetHoursInput">Target hours</label>
+        <input type="number" id="hbTargetHoursInput" min="0.1" step="0.1" placeholder="e.g. 1" />
+        <span class="target-unit">(first time for this task — sets the goal)</span>
       </div>
       <div class="session-btn-row">
         <button class="btn-session" id="sessionToggleBtn" onclick="startOrJoinBooking()">▶ Start Booking</button>
@@ -313,6 +324,9 @@
     <div id="sessionExportList" class="session-export-list"></div>
     <div class="buttons" style="margin-top:10px;">
       <button class="btn-active" id="exportSelectedSessionsBtn" style="grid-column: 1 / -1;" onclick="exportSelectedSessions()">⬇ Export Selected Sessions (0)</button>
+    </div>
+    <div class="buttons" style="margin-top:8px;">
+      <button class="btn-session-secondary" id="summarizeSelectedSessionsBtn" style="grid-column: 1 / -1;" onclick="generateSummaryForSelectedSessions()">📄 Generate Summary for Selected (0)</button>
     </div>
   </section>
 

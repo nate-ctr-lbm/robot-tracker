@@ -322,6 +322,7 @@ let entries = [];
     }
     updateTaskButton();
     updateTotals();
+    updateSessionButton();
   }
 
   function handleDowntimeAction() {
@@ -412,7 +413,7 @@ let entries = [];
     }
   }
 
-  function updateTotals() {
+  function computeTotalsForEntries(sorted) {
     let totalSeconds = 0;
     let tasksCompleted = 0;
     let totalDowntimeSeconds = 0;
@@ -423,7 +424,6 @@ let entries = [];
     // the next "completed" for the same task number. Keyed by bookingId so
     // concurrent bookings' interleaved start/end pairs never cross-contaminate
     // each other's duration calculations.
-    const sorted = getViewingEntries().sort((a, b) => (entrySortValue(a) - entrySortValue(b)) || (a.seq - b.seq));
     const openStarts = {};
     const openDowntimeStartByBooking = {};
     let openDeadTimeStart = null; // Dead Time deliberately stays global — see note in inferTaskNumberFromEntries
@@ -473,9 +473,8 @@ let entries = [];
       }
     });
 
-    // Total Lunch is now the sum of whole BOOKINGS whose type is "Lunch"
-    // (Lunch is a booking type now, not a sub-state within a work booking),
-    // scoped to just the currently viewed date.
+    // Total Lunch is the sum of whole BOOKINGS whose type is "Lunch"
+    // (Lunch is a booking type, not a sub-state within a work booking).
     let totalLunchSeconds = 0;
     const lunchBookingGroups = {};
     sorted.forEach(e => {
@@ -494,6 +493,13 @@ let entries = [];
       if (diff < 0) diff += 24 * 3600;
       totalLunchSeconds += diff;
     });
+
+    return { totalSeconds, tasksCompleted, totalDowntimeSeconds, totalLunchSeconds, totalDeadTimeSeconds };
+  }
+
+  function updateTotals() {
+    const sorted = getViewingEntries().sort((a, b) => (entrySortValue(a) - entrySortValue(b)) || (a.seq - b.seq));
+    const { totalSeconds, tasksCompleted, totalDowntimeSeconds, totalLunchSeconds, totalDeadTimeSeconds } = computeTotalsForEntries(sorted);
 
     document.getElementById('totalActiveDisplay').textContent = formatDuration(totalSeconds);
     document.getElementById('totalDowntimeDisplay').textContent = formatDuration(totalDowntimeSeconds);
@@ -1654,19 +1660,24 @@ let entries = [];
     return div.innerHTML;
   }
 
-  function generateSummaryDoc() {
-    const viewEntries = getViewingEntries();
+  function generateSummaryDoc(customEntries, customLabel) {
+    const viewEntries = customEntries || getViewingEntries();
     if (viewEntries.length === 0) {
-      showStatus(`Nothing to summarize for ${formatDateShort(viewingDate)}`);
+      showStatus(customEntries ? 'Nothing to summarize in the selected sessions' : `Nothing to summarize for ${formatDateShort(viewingDate)}`);
       return;
     }
     const sorted = viewEntries.slice().sort((a, b) => (entrySortValue(a) - entrySortValue(b)) || (a.seq - b.seq));
     const operators = [...new Set(sorted.map(e => e.operator).filter(Boolean))];
-    const tasksCompleted = document.getElementById('totalTasksDisplay').textContent;
-    const activeTime = document.getElementById('totalActiveDisplay').textContent;
-    const downtimeTime = document.getElementById('totalDowntimeDisplay').textContent;
-    const lunchTime = document.getElementById('totalLunchDisplay').textContent;
-    const deadTime = document.getElementById('totalDeadTimeDisplay') ? document.getElementById('totalDeadTimeDisplay').textContent : '0m 0s';
+
+    // Compute headline stats directly from the entries being summarized —
+    // never from the live DOM totals, which always reflect today's whole
+    // day regardless of what's actually being summarized here.
+    const totals = computeTotalsForEntries(sorted);
+    const tasksCompleted = totals.tasksCompleted;
+    const activeTime = formatDuration(totals.totalSeconds);
+    const downtimeTime = formatDuration(totals.totalDowntimeSeconds);
+    const lunchTime = formatDuration(totals.totalLunchSeconds);
+    const deadTime = formatDuration(totals.totalDeadTimeSeconds);
 
     const sessionSummaries = computeSessionSummaries(sorted);
     const downtimeLog = computeDurationLog(sorted, 'downtime');
@@ -1683,8 +1694,8 @@ let entries = [];
     const totalSessionWithDowntime = formatDuration(totalWithDowntimeSeconds);
     const totalSessionWithoutDowntime = formatDuration(totalWithoutDowntimeSeconds);
 
-    const dateStr = new Date(viewingDate + 'T00:00:00').toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-    const summaryFilename = `robot_use_summary_${viewingDate}.html`;
+    const dateStr = customLabel || new Date(viewingDate + 'T00:00:00').toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+    const summaryFilename = customEntries ? `robot_use_summary_selected_sessions.html` : `robot_use_summary_${viewingDate}.html`;
 
     const html = `
 <!DOCTYPE html><html><head><meta charset="UTF-8"><title>Robot Use Summary — ${dateStr}</title>
@@ -1988,6 +1999,8 @@ let entries = [];
     const checked = document.querySelectorAll('#sessionExportList input[type="checkbox"]:checked');
     const btn = document.getElementById('exportSelectedSessionsBtn');
     if (btn) btn.textContent = `⬇ Export Selected Sessions (${checked.length})`;
+    const summaryBtn = document.getElementById('summarizeSelectedSessionsBtn');
+    if (summaryBtn) summaryBtn.textContent = `📄 Generate Summary for Selected (${checked.length})`;
   }
 
   function exportSelectedSessions() {
@@ -2019,6 +2032,34 @@ let entries = [];
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
     showStatus(`Exported ${selectedSessions.length} session${selectedSessions.length === 1 ? '' : 's'}`);
+  }
+
+  function generateSummaryForSelectedSessions() {
+    const checked = Array.from(document.querySelectorAll('#sessionExportList input[type="checkbox"]:checked'));
+    if (checked.length === 0) {
+      showStatus('⚠ Check at least one session to summarize');
+      return;
+    }
+    const sessions = computeAllSessions();
+    const selectedIds = new Set(checked.map(cb => cb.value));
+    const selectedSessions = sessions.filter(s => selectedIds.has(s.id));
+    const selectedEntries = selectedSessions.flatMap(s => s.entries);
+
+    // Build a readable label spanning whatever dates the selected sessions
+    // actually cover, since selections can span the whole history, not
+    // just a single day like the regular "Generate Summary" button.
+    const dates = [...new Set(selectedEntries.map(e => e.date).filter(Boolean))].sort();
+    let label;
+    if (dates.length === 0) {
+      label = `${selectedSessions.length} Selected Session${selectedSessions.length === 1 ? '' : 's'}`;
+    } else if (dates.length === 1) {
+      const d = new Date(dates[0] + 'T00:00:00').toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+      label = `${d} — ${selectedSessions.length} Selected Session${selectedSessions.length === 1 ? '' : 's'}`;
+    } else {
+      label = `${formatDateShort(dates[0])} to ${formatDateShort(dates[dates.length - 1])} — ${selectedSessions.length} Selected Sessions`;
+    }
+
+    generateSummaryDoc(selectedEntries, label);
   }
 
   function importCSV(event) {
@@ -2198,6 +2239,7 @@ let entries = [];
         mainSessionType = stillActive.type;
         currentPolicyNumber = stillActive.policyNumber ? parseInt(stillActive.policyNumber, 10) : null;
         currentUcNumber = stillActive.ucNumber ? parseInt(stillActive.ucNumber, 10) : null;
+        currentHbTaskNumber = stillActive.hbTaskNumber ? parseInt(stillActive.hbTaskNumber, 10) : null;
         sessionEnded = false;
       } else {
         // It was ended (by us or someone else) since we last checked in —
@@ -2416,9 +2458,70 @@ let entries = [];
     const otherInput = document.getElementById('mainSessionOtherInput');
     const ucRow = document.getElementById('ucNumberRow');
     const policyRow = document.getElementById('policyNumberRow');
+    const hbTaskRow = document.getElementById('hbTaskNumberRow');
+    const hbTargetRow = document.getElementById('hbTargetHoursRow');
     otherInput.style.display = (select.value === 'Other') ? 'block' : 'none';
     ucRow.style.display = (select.value === 'UC Data Collect') ? 'flex' : 'none';
     policyRow.style.display = (select.value === 'Policy Training') ? 'flex' : 'none';
+    hbTaskRow.style.display = (select.value === 'Household Bridge Data Collection') ? 'flex' : 'none';
+    hbTargetRow.style.display = 'none';
+    document.getElementById('hbTaskNumberInput').value = '';
+    document.getElementById('hbTargetHoursInput').value = '';
+  }
+
+  // Looks across ALL history (not just today) for a prior Household Bridge
+  // booking with this exact task number, to find whatever target hours was
+  // set the first time this task was ever started — mirrors how UC#/Policy#
+  // get embedded directly in the note rather than needing a separate table.
+  function findHbTaskTarget(taskNumber) {
+    const pattern = new RegExp(`—\\s*Household Bridge Data Collection\\s*\\(Task #${taskNumber}, Target: ([\\d.]+)h\\)`, 'i');
+    for (const e of entries) {
+      if (e.type !== 'Session') continue;
+      const m = (e.note || '').match(pattern);
+      if (m) return parseFloat(m[1]);
+    }
+    return null;
+  }
+
+  function handleHbTaskNumberChange() {
+    const taskInput = document.getElementById('hbTaskNumberInput');
+    const targetRow = document.getElementById('hbTargetHoursRow');
+    const taskNum = parseInt(taskInput.value, 10);
+    if (!taskNum || taskNum < 1) {
+      targetRow.style.display = 'none';
+      return;
+    }
+    const existingTarget = findHbTaskTarget(taskNum);
+    if (existingTarget === null) {
+      // First time this task number has ever been started — need a goal.
+      targetRow.style.display = 'flex';
+    } else {
+      targetRow.style.display = 'none';
+      const progress = computeHbTaskProgress(taskNum, existingTarget);
+      showStatus(`Task #${taskNum}: ${progress.accumulatedHours.toFixed(1)} of ${existingTarget}h collected so far`);
+    }
+  }
+
+  // Sums accumulated Run Time (task timer active seconds) across EVERY
+  // Household Bridge booking ever logged with this task number, regardless
+  // of date — this is a multi-session, multi-day cumulative goal, not a
+  // single-sitting one.
+  function computeHbTaskProgress(taskNumber, targetHoursOverride) {
+    const bookingIds = new Set();
+    const pattern = new RegExp(`Household Bridge Data Collection\\s*\\(Task #${taskNumber}`, 'i');
+    entries.forEach(e => {
+      if (e.type === 'Session' && e.bookingId && pattern.test(e.note || '')) {
+        bookingIds.add(e.bookingId);
+      }
+    });
+    const relevantEntries = entries.filter(e => bookingIds.has(e.bookingId));
+    const totals = computeTotalsForEntries(relevantEntries.slice().sort((a, b) => (entrySortValue(a) - entrySortValue(b)) || (a.seq - b.seq)));
+    const target = (typeof targetHoursOverride === 'number') ? targetHoursOverride : (findHbTaskTarget(taskNumber) || 0);
+    return {
+      accumulatedSeconds: totals.totalSeconds,
+      accumulatedHours: totals.totalSeconds / 3600,
+      targetHours: target
+    };
   }
 
   let currentPolicyNumber = null;
@@ -2454,12 +2557,14 @@ let entries = [];
     return `booking_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   }
 
-  function bookingIdentifier(type, ucNum, policyNum) {
+  function bookingIdentifier(type, ucNum, policyNum, hbTaskNum) {
     // The thing that makes a booking "the same" for join-vs-start purposes:
     // for UC Data Collect it's the UC number; for Policy Training it's the
-    // Policy number; anything else is identified by type alone.
+    // Policy number; for Household Bridge it's the task number; anything
+    // else is identified by type alone.
     if (type === 'UC Data Collect') return `UC Data Collect|${ucNum || ''}`;
     if (type === 'Policy Training') return `Policy Training|${policyNum || ''}`;
+    if (type === 'Household Bridge Data Collection') return `Household Bridge Data Collection|${hbTaskNum || ''}`;
     return `${type}|`;
   }
 
@@ -2483,7 +2588,8 @@ let entries = [];
       const note = startEv.note || '';
       const policyMatch = note.match(/\(Policy #(\d+)\)\s*$/);
       const ucMatch = note.match(/\(UC #(\d+)\)\s*$/);
-      let noteClean = note.replace(/\s*\(Policy #\d+\)\s*$/, '').replace(/\s*\(UC #\d+\)\s*$/, '');
+      const hbMatch = note.match(/\(Task #(\d+)(?:,[^)]*)?\)\s*$/);
+      let noteClean = note.replace(/\s*\(Policy #\d+\)\s*$/, '').replace(/\s*\(UC #\d+\)\s*$/, '').replace(/\s*\(Task #\d+(?:,[^)]*)?\)\s*$/, '');
       const typeMatch = noteClean.match(/—\s*(.+)$/);
 
       const operators = [...new Set(evs.map(e => e.operator).filter(Boolean))];
@@ -2493,6 +2599,7 @@ let entries = [];
         type: typeMatch ? typeMatch[1].trim() : 'Unknown',
         policyNumber: policyMatch ? policyMatch[1] : null,
         ucNumber: ucMatch ? ucMatch[1] : null,
+        hbTaskNumber: hbMatch ? hbMatch[1] : null,
         operators: operators.join(', ') || '—',
         startDate: startEv.date,
         startTime: startEv.timestamp
@@ -2510,12 +2617,22 @@ let entries = [];
       return;
     }
     container.innerHTML = active.map(b => {
-      const idText = b.ucNumber ? ` (UC #${b.ucNumber})` : (b.policyNumber ? ` (Policy #${b.policyNumber})` : '');
+      let idText = '';
+      let progressText = '';
+      if (b.ucNumber) idText = ` (UC #${b.ucNumber})`;
+      else if (b.policyNumber) idText = ` (Policy #${b.policyNumber})`;
+      else if (b.hbTaskNumber) {
+        idText = ` (Task #${b.hbTaskNumber})`;
+        const progress = computeHbTaskProgress(parseInt(b.hbTaskNumber, 10));
+        if (progress.targetHours > 0) {
+          progressText = ` — ${progress.accumulatedHours.toFixed(1)} of ${progress.targetHours}h`;
+        }
+      }
       const isMine = b.bookingId === myBookingId;
       return `
         <div class="active-booking-row">
           <div>
-            <div class="active-booking-label">${escapeHtml(b.type)}${idText}${isMine ? ' <span style="color:var(--accent);">— you</span>' : ''}</div>
+            <div class="active-booking-label">${escapeHtml(b.type)}${idText}${progressText}${isMine ? ' <span style="color:var(--accent);">— you</span>' : ''}</div>
             <div class="active-booking-meta">Started ${formatDateShort(b.startDate)} ${b.startTime} — ${escapeHtml(b.operators)}</div>
           </div>
           ${isMine ? '' : `<button class="join-booking-btn" onclick="joinBooking('${b.bookingId}')">Join</button>`}
@@ -2524,11 +2641,14 @@ let entries = [];
     }).join('');
   }
 
-  function attachToBooking(bookingId, type, policyNumber, ucNumber) {
+  let currentHbTaskNumber = null;
+
+  function attachToBooking(bookingId, type, policyNumber, ucNumber, hbTaskNumber) {
     myBookingId = bookingId;
     mainSessionType = type;
     currentPolicyNumber = policyNumber;
     currentUcNumber = ucNumber;
+    currentHbTaskNumber = hbTaskNumber || null;
     sessionEnded = false;
     try { sessionStorage.setItem(MY_BOOKING_KEY, bookingId); } catch (err) { /* ignore */ }
     closeDeadTime();
@@ -2548,6 +2668,7 @@ let entries = [];
     mainSessionType = '';
     currentPolicyNumber = null;
     currentUcNumber = null;
+    currentHbTaskNumber = null;
     sessionEnded = true;
     try { sessionStorage.removeItem(MY_BOOKING_KEY); } catch (err) { /* ignore */ }
 
@@ -2555,10 +2676,14 @@ let entries = [];
     const otherInput = document.getElementById('mainSessionOtherInput');
     const policyInput = document.getElementById('policyNumberInput');
     const ucInput = document.getElementById('ucNumberInput');
+    const hbTaskInput = document.getElementById('hbTaskNumberInput');
+    const hbTargetInput = document.getElementById('hbTargetHoursInput');
     if (typeSelect) { typeSelect.value = ''; typeSelect.disabled = false; }
     if (otherInput) { otherInput.value = ''; otherInput.style.display = 'none'; otherInput.disabled = false; }
     if (policyInput) { policyInput.value = ''; policyInput.disabled = false; }
     if (ucInput) { ucInput.value = ''; ucInput.disabled = false; }
+    if (hbTaskInput) { hbTaskInput.value = ''; hbTaskInput.disabled = false; }
+    if (hbTargetInput) { hbTargetInput.value = ''; hbTargetInput.disabled = false; document.getElementById('hbTargetHoursRow').style.display = 'none'; }
 
     const startBookingForm = document.getElementById('startBookingForm');
     if (startBookingForm) startBookingForm.style.display = 'block';
@@ -2584,8 +2709,8 @@ let entries = [];
       renderActiveBookingsList();
       return;
     }
-    logEntry('Session', `Joined booking — ${booking.type}${booking.ucNumber ? ` (UC #${booking.ucNumber})` : booking.policyNumber ? ` (Policy #${booking.policyNumber})` : ''}`, null, null, bookingId);
-    attachToBooking(bookingId, booking.type, booking.policyNumber, booking.ucNumber);
+    logEntry('Session', `Joined booking — ${booking.type}${booking.ucNumber ? ` (UC #${booking.ucNumber})` : booking.policyNumber ? ` (Policy #${booking.policyNumber})` : booking.hbTaskNumber ? ` (Task #${booking.hbTaskNumber})` : ''}`, null, null, bookingId);
+    attachToBooking(bookingId, booking.type, booking.policyNumber, booking.ucNumber, booking.hbTaskNumber);
     showStatus(`Joined ${booking.type}`);
   }
 
@@ -2599,6 +2724,8 @@ let entries = [];
     const otherInput = document.getElementById('mainSessionOtherInput');
     const policyInput = document.getElementById('policyNumberInput');
     const ucInput = document.getElementById('ucNumberInput');
+    const hbTaskInput = document.getElementById('hbTaskNumberInput');
+    const hbTargetInput = document.getElementById('hbTargetHoursInput');
 
     const chosenType = (typeSelect.value === 'Other') ? otherInput.value.trim() : typeSelect.value;
     if (!chosenType) {
@@ -2617,11 +2744,34 @@ let entries = [];
     const policyVal = parseInt(policyInput.value, 10);
     const policyNumber = (policyVal > 0) ? policyVal : null;
 
+    const hbTaskVal = parseInt(hbTaskInput.value, 10);
+    const hbTaskNumber = (hbTaskVal > 0) ? hbTaskVal : null;
+    let hbTargetHours = null;
+    if (chosenType === 'Household Bridge Data Collection') {
+      if (!hbTaskNumber) {
+        showStatus('⚠ Enter a Task # before starting a Household Bridge booking');
+        hbTaskInput.focus();
+        return;
+      }
+      const existingTarget = findHbTaskTarget(hbTaskNumber);
+      if (existingTarget === null) {
+        const targetVal = parseFloat(hbTargetInput.value);
+        if (!targetVal || targetVal <= 0) {
+          showStatus('⚠ This is the first time for this task — enter a target in hours to set the goal');
+          hbTargetInput.focus();
+          return;
+        }
+        hbTargetHours = targetVal;
+      } else {
+        hbTargetHours = existingTarget;
+      }
+    }
+
     // If a booking with this same identity is already running, offer to
     // join it instead of starting a duplicate, confusing, overlapping one.
-    const identity = bookingIdentifier(chosenType, ucNumber, policyNumber);
+    const identity = bookingIdentifier(chosenType, ucNumber, policyNumber, hbTaskNumber);
     const existing = computeActiveBookings().find(b =>
-      bookingIdentifier(b.type, b.ucNumber, b.policyNumber) === identity
+      bookingIdentifier(b.type, b.ucNumber, b.policyNumber, b.hbTaskNumber) === identity
     );
     if (existing) {
       showStatus(`⚠ That's already running — click "Join" on it in the Active Bookings list above instead`);
@@ -2629,13 +2779,22 @@ let entries = [];
     }
 
     const bookingId = generateBookingId();
-    const idSuffix = ucNumber ? ` (UC #${ucNumber})` : policyNumber ? ` (Policy #${policyNumber})` : '';
+    let idSuffix = '';
+    if (ucNumber) idSuffix = ` (UC #${ucNumber})`;
+    else if (policyNumber) idSuffix = ` (Policy #${policyNumber})`;
+    else if (hbTaskNumber) {
+      // Embed the target the first time this task number is ever started,
+      // so computeHbTaskProgress can find it later purely from history —
+      // same pattern as UC#/Policy#, no separate storage needed.
+      const isFirstTimeForTask = (findHbTaskTarget(hbTaskNumber) === null);
+      idSuffix = isFirstTimeForTask ? ` (Task #${hbTaskNumber}, Target: ${hbTargetHours}h)` : ` (Task #${hbTaskNumber})`;
+    }
     logEntry('Session', `New session started — ${chosenType}${idSuffix}`, null, null, bookingId);
     currentTaskNumber = 1; // a genuinely new booking starts fresh, not continuing the last one's count
     taskInProgress = false;
     taskStartTimestamp = null;
     updateTaskButton();
-    attachToBooking(bookingId, chosenType, policyNumber, ucNumber);
+    attachToBooking(bookingId, chosenType, policyNumber, ucNumber, hbTaskNumber);
     showStatus('Booking started');
   }
 
@@ -2678,8 +2837,13 @@ let entries = [];
         status.textContent = "You're not attached to a booking yet.";
         status.classList.remove('active');
       } else {
-        const idText = currentUcNumber ? ` (UC #${currentUcNumber})` : currentPolicyNumber ? ` (Policy #${currentPolicyNumber})` : '';
-        status.textContent = `You're on: ${mainSessionType}${idText}`;
+        const idText = currentUcNumber ? ` (UC #${currentUcNumber})` : currentPolicyNumber ? ` (Policy #${currentPolicyNumber})` : currentHbTaskNumber ? ` (Task #${currentHbTaskNumber})` : '';
+        let progressText = '';
+        if (currentHbTaskNumber) {
+          const progress = computeHbTaskProgress(currentHbTaskNumber);
+          progressText = ` — ${progress.accumulatedHours.toFixed(1)} of ${progress.targetHours}h collected`;
+        }
+        status.textContent = `You're on: ${mainSessionType}${idText}${progressText}`;
         status.classList.add('active');
       }
     }
