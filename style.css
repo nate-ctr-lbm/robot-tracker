@@ -324,6 +324,43 @@
     gap: 10px;
     flex-wrap: wrap;
   }
+  .after-hours-banner #afterHoursLockedState {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    width: 100%;
+  }
+  .after-hours-override-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .after-hours-override-row input {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    color: var(--text);
+    padding: 6px 10px;
+    font-size: 13px;
+    width: 130px;
+  }
+  .after-hours-override-row button {
+    background: var(--accent2);
+    color: #2a0f06;
+    border: none;
+    border-radius: 3px;
+    padding: 6px 12px;
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  .after-hours-override-error {
+    color: var(--accent2);
+    font-size: 12px;
+    font-weight: 600;
+  }
   .history-banner button {
     background: var(--accent2);
     color: #2a0f06;

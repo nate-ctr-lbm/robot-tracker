@@ -256,6 +256,10 @@ let entries = [];
       showStatus('⚠ Start a Session first');
       return;
     }
+    if (!canLogRightNow() && !taskInProgress) {
+      showStatus('⚠ After 6:30 PM — view only, logging resumes tomorrow');
+      return;
+    }
     resetIdleTimer();
     // If downtime is currently open and we're about to start a new task,
     // close the downtime first so it doesn't overlap with active work.
@@ -328,6 +332,10 @@ let entries = [];
   function handleDowntimeAction() {
     if (sessionEnded) {
       showStatus('⚠ Start a Session first');
+      return;
+    }
+    if (!canLogRightNow() && !downtimeInProgress) {
+      showStatus('⚠ After 6:30 PM — view only, logging resumes tomorrow');
       return;
     }
     resetIdleTimer();
@@ -713,6 +721,8 @@ let entries = [];
   const MY_BOOKING_KEY = 'walden_robot_tracker_my_booking_id';
   let clockIntervalId = null;
 
+  let tickHasRunOnce = false;
+
   function tick() {
     if (clockPaused) return;
     const now = new Date();
@@ -742,6 +752,22 @@ let entries = [];
 
     updateTaskProgressDisplay();
     updateSessionProgressBar();
+    // tick()'s own immediate call below happens synchronously at script
+    // load time — before later const/let declarations in this file (like
+    // OPERATING_HOURS_CUTOFF) have executed, which would throw a temporal
+    // dead zone error. initApp() already calls enforceOperatingHoursCutoff()
+    // once on load (safely, since it only runs after user interaction, well
+    // after the whole script has finished loading) — so it's safe to skip
+    // this specific check on tick's very first call and only run it from
+    // the second (interval-driven, 1+ second later) call onward.
+    if (tickHasRunOnce) {
+      const wasPastCutoff = lastOperatingHoursCheck;
+      enforceOperatingHoursCutoff();
+      if (wasPastCutoff !== lastOperatingHoursCheck) {
+        updateDateNavUI();
+      }
+    }
+    tickHasRunOnce = true;
   }
   clockIntervalId = setInterval(tick, 1000);
   // Idle-check interval removed — downtime is fully manual now.
@@ -1029,9 +1055,13 @@ let entries = [];
       table.style.display = 'none';
       empty.style.display = 'block';
       if (tabBar) tabBar.innerHTML = '';
-      empty.textContent = isViewingToday()
-        ? "No entries yet — press a button above to start logging."
-        : "No entries logged on this day.";
+      if (!isViewingToday()) {
+        empty.textContent = "No entries logged on this day.";
+      } else if (isPastOperatingHours()) {
+        empty.textContent = "No entries were logged today. It's after 6:30 PM — logging resumes tomorrow.";
+      } else {
+        empty.textContent = "No entries yet — press a button above to start logging.";
+      }
       return;
     }
     table.style.display = 'table';
@@ -1324,12 +1354,115 @@ let entries = [];
     return viewingDate === todayDateString();
   }
 
+  // 6:30 PM local time cutoff — after this, today becomes read-only, same
+  // as browsing a past date. Uses each device's own local clock, matching
+  // how every other timestamp in this app already works. Cutoff values are
+  // inlined directly (not a separately-declared const) so this function is
+  // always safe to call no matter how early — including from tick()'s own
+  // immediate synchronous call at script load time, before this point in
+  // the file would otherwise have executed yet.
+  function isPastOperatingHours() {
+    const now = new Date();
+    const cutoffMinutes = 18 * 60 + 30;
+    const nowMinutes = now.getHours() * 60 + now.getMinutes();
+    return nowMinutes >= cutoffMinutes;
+  }
+  // A separate passcode from the main team login, letting someone
+  // authorized (e.g. a supervisor approving legitimate late work) bypass
+  // the 6:30 cutoff for the rest of today, on this device only.
+  // CHANGE THIS to whatever code your team wants — it's a plain client-side
+  // string, not a real secret, so treat it the same as a soft door code,
+  // not a security boundary.
+  const AFTER_HOURS_OVERRIDE_CODE = 'OVERRIDE2026';
+  const AFTER_HOURS_OVERRIDE_KEY = 'walden_robot_tracker_after_hours_override';
+
+  function isAfterHoursOverrideActive() {
+    try {
+      // Keyed to today's date specifically, so leaving a tab open overnight
+      // doesn't silently carry an old override into a brand new day.
+      return sessionStorage.getItem(AFTER_HOURS_OVERRIDE_KEY) === todayDateString();
+    } catch (err) {
+      return false;
+    }
+  }
+
+  function submitAfterHoursOverride() {
+    const input = document.getElementById('afterHoursOverrideInput');
+    const errorEl = document.getElementById('afterHoursOverrideError');
+    if (!input) return;
+    if (input.value === AFTER_HOURS_OVERRIDE_CODE) {
+      try { sessionStorage.setItem(AFTER_HOURS_OVERRIDE_KEY, todayDateString()); } catch (err) { /* ignore */ }
+      input.value = '';
+      if (errorEl) errorEl.textContent = '';
+      updateDateNavUI();
+      updateWorkControlsGating();
+      showStatus('After-hours override active — logging unlocked for the rest of today');
+    } else {
+      if (errorEl) errorEl.textContent = 'Incorrect code';
+    }
+  }
+
+  function canLogRightNow() {
+    return isViewingToday() && (!isPastOperatingHours() || isAfterHoursOverrideActive());
+  }
+
+  // Force-ends any booking still open once the cutoff passes. Runs from any
+  // device that has the app open — not just the booking's own owner —
+  // since the goal is that every booking is closed by 6:30, regardless of
+  // whose tab happens to notice first. For this device's OWN attached
+  // booking, any in-progress task/downtime gets cleanly auto-closed first
+  // (we have the local state to do that correctly). For OTHER people's
+  // still-open bookings found via the shared active-bookings list, we
+  // close the booking itself without trying to close their sub-timers —
+  // no local visibility into their state, and an unclosed task/downtime
+  // entry is already a tolerated edge case elsewhere in this app.
+  let lastOperatingHoursCheck = null;
+  function enforceOperatingHoursCutoff() {
+    if (!isPastOperatingHours()) { lastOperatingHoursCheck = false; return; }
+    lastOperatingHoursCheck = true;
+    const myOverrideActive = isAfterHoursOverrideActive();
+
+    // My own override only protects MY OWN booking — it says nothing about
+    // whether anyone else's booking also has a valid override, so this
+    // device still helps close everyone else's still-open bookings below.
+    if (myBookingId && !myOverrideActive) {
+      if (taskInProgress) {
+        const durationSeconds = taskStartTimestamp ? Math.round((new Date() - taskStartTimestamp) / 1000) : 0;
+        logEntry('Active', `Task ${currentTaskNumber} completed (${formatDuration(durationSeconds)}) — auto-closed: end of day`, durationSeconds);
+        taskInProgress = false;
+        taskStartTimestamp = null;
+        updateTaskButton();
+      }
+      if (downtimeInProgress) {
+        autoCloseDowntime('end of day');
+      }
+      const idSuffix = currentUcNumber ? ` (UC #${currentUcNumber})` : currentPolicyNumber ? ` (Policy #${currentPolicyNumber})` : currentHbTaskNumber ? ` (Task #${currentHbTaskNumber})` : '';
+      logEntry('Session', `Session ended — ${mainSessionType}${idSuffix} — auto-ended: end of day`, null, null, myBookingId);
+      detachFromMyBooking();
+      showStatus('Booking auto-ended — 6:30 PM cutoff reached');
+    }
+
+    // Sweep any other still-open bookings this device can see, regardless
+    // of owner, so the rule holds even if the owner's own tab is closed.
+    // Excludes my own booking specifically when my override is active —
+    // otherwise this sweep would immediately re-close the very booking
+    // the block above just protected, since it has no other awareness of
+    // which booking is "mine."
+    const stillActive = computeActiveBookings().filter(b => !(myOverrideActive && b.bookingId === myBookingId));
+    stillActive.forEach(b => {
+      const idSuffix = b.ucNumber ? ` (UC #${b.ucNumber})` : b.policyNumber ? ` (Policy #${b.policyNumber})` : b.hbTaskNumber ? ` (Task #${b.hbTaskNumber})` : '';
+      logEntry('Session', `Session ended — ${b.type}${idSuffix} — auto-ended: end of day`, null, null, b.bookingId);
+    });
+    if (stillActive.length > 0) renderActiveBookingsList();
+  }
+
   function updateDateNavUI() {
     const today = todayDateString();
     const label = document.getElementById('dateNavLabel');
     const dateInput = document.getElementById('viewingDateInput');
     const todayBtn = document.getElementById('dateNavTodayBtn');
     const banner = document.getElementById('historyBanner');
+    const afterHoursBanner = document.getElementById('afterHoursBanner');
 
     dateInput.value = viewingDate;
 
@@ -1338,15 +1471,24 @@ let entries = [];
       label.classList.remove('is-history');
       todayBtn.style.display = 'none';
       banner.style.display = 'none';
+      if (afterHoursBanner) {
+        afterHoursBanner.style.display = isPastOperatingHours() ? 'flex' : 'none';
+        const lockedState = document.getElementById('afterHoursLockedState');
+        const activeState = document.getElementById('afterHoursOverrideActiveState');
+        const overridden = isAfterHoursOverrideActive();
+        if (lockedState) lockedState.style.display = overridden ? 'none' : 'block';
+        if (activeState) activeState.style.display = overridden ? 'block' : 'none';
+      }
     } else {
       const d = new Date(viewingDate + 'T00:00:00');
       label.textContent = d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
       label.classList.add('is-history');
       todayBtn.style.display = 'inline-block';
       banner.style.display = 'flex';
+      if (afterHoursBanner) afterHoursBanner.style.display = 'none';
     }
 
-    setActionControlsEnabled(viewingDate === today);
+    setActionControlsEnabled(canLogRightNow());
   }
 
   function setActionControlsEnabled(enabled) {
@@ -2578,10 +2720,11 @@ let entries = [];
   let currentUcNumber = null;
 
   function updateWorkControlsGating() {
-    // Run Time / Downtime only make sense once THIS device is
-    // attached to a booking, AND only while viewing today (not browsing
-    // read-only history) — this is the "order of operations" enforcement.
-    const enabled = !sessionEnded && isViewingToday();
+    // Run Time / Downtime only make sense once THIS device is attached to
+    // a booking, AND only during operating hours today (not browsing
+    // read-only history, and not after the 6:30 PM cutoff) — this is the
+    // "order of operations" enforcement.
+    const enabled = !sessionEnded && canLogRightNow();
     ['taskActionBtn', 'downtimeActionBtn'].forEach(id => {
       const btn = document.getElementById(id);
       if (!btn) return;
@@ -2766,6 +2909,10 @@ let entries = [];
 
   function startOrJoinBooking() {
     resetIdleTimer();
+    if (!canLogRightNow()) {
+      showStatus(isViewingToday() ? '⚠ After 6:30 PM — view only, logging resumes tomorrow' : '⚠ Switch to today to start a booking');
+      return;
+    }
     if (myBookingId) {
       showStatus('⚠ You are already attached to a booking');
       return;
@@ -3015,6 +3162,7 @@ let entries = [];
     // Now that entries are loaded from the shared database, figure out
     // today's live tracking state (task/downtime/lunch/session) from them.
     inferTaskNumberFromEntries();
+    enforceOperatingHoursCutoff();
 
     updateTaskButton();
     updateDowntimeButton();

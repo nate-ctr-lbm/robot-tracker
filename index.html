@@ -66,6 +66,20 @@
     📖 Viewing history — read-only. Logging is locked to today. <button onclick="jumpToToday()">Go to Today</button>
   </div>
 
+  <div class="history-banner after-hours-banner" id="afterHoursBanner" style="display:none;">
+    <div id="afterHoursLockedState">
+      <span>🌙 After 6:30 PM — view only. Bookings are automatically closed and logging resumes tomorrow.</span>
+      <div class="after-hours-override-row">
+        <input type="password" id="afterHoursOverrideInput" placeholder="Override code" onkeydown="if(event.key==='Enter')submitAfterHoursOverride()" />
+        <button onclick="submitAfterHoursOverride()">Unlock</button>
+        <span class="after-hours-override-error" id="afterHoursOverrideError"></span>
+      </div>
+    </div>
+    <div id="afterHoursOverrideActiveState" style="display:none;">
+      ✅ After-hours override active — logging unlocked for the rest of today on this device.
+    </div>
+  </div>
+
   <div class="view-toggle-row">
     <button class="view-toggle-btn active" id="viewToggleKpiBtn" onclick="setViewMode('kpi')">KPI View</button>
     <button class="view-toggle-btn" id="viewToggleGridBtn" onclick="setViewMode('grid')">Grid View</button>
