@@ -493,6 +493,24 @@ let entries = [];
     }
   }
 
+  // Given a booking's own entries (already sorted chronologically), figures
+  // out whether it's CURRENTLY ongoing or closed. A booking can be started,
+  // ended, and reopened more than once — what matters is whichever of
+  // those three happened MOST RECENTLY, not just whether an end ever
+  // occurred. Used everywhere a booking's open/closed status gets checked,
+  // so Reopen behaves consistently across the whole app rather than
+  // showing as active in one view and closed in another.
+  function getBookingLifecycleStatus(bookingEntries) {
+    const lifecycleEvents = bookingEntries.filter(e =>
+      /new session started/i.test(e.note || '') ||
+      /^session ended/i.test(e.note || '') ||
+      /^session reopened/i.test(e.note || '')
+    );
+    const mostRecent = lifecycleEvents[lifecycleEvents.length - 1];
+    const isOngoing = !mostRecent || !/^session ended/i.test(mostRecent.note || '');
+    return { isOngoing, endEntry: isOngoing ? null : mostRecent };
+  }
+
   function computeTotalsForEntries(sorted) {
     let totalSeconds = 0;
     let tasksCompleted = 0;
@@ -1152,6 +1170,7 @@ let entries = [];
     const empty = document.getElementById('emptyState');
     const table = document.getElementById('logTable');
     const tabBar = document.getElementById('logTabBar');
+    const reopenBar = document.getElementById('logReopenBar');
     const viewEntries = getViewingEntries();
     document.getElementById('entryCount').textContent = `${viewEntries.length} entr${viewEntries.length === 1 ? 'y' : 'ies'}`;
 
@@ -1188,25 +1207,26 @@ let entries = [];
 
       let title = 'Dead Time';
       let meta = '';
+      let isOngoing = false;
       if (key !== '__unassigned__') {
-        const startEntry = [...groupEntries].reverse().find(e => /new session started/i.test(e.note || '')) || groupEntries[groupEntries.length - 1];
-        const note = startEntry.note || '';
-        const policyMatch = note.match(/\(Policy #(\d+)\)\s*$/);
-        const ucMatch = note.match(/\(UC #(\d+)\)\s*$/);
-        const noteClean = note.replace(/\s*\(Policy #\d+\)\s*$/, '').replace(/\s*\(UC #\d+\)\s*$/, '');
-        const typeMatch = noteClean.match(/—\s*(.+)$/);
-        const type = typeMatch ? typeMatch[1].trim() : 'Unknown';
-        const idSuffix = ucMatch ? ` (UC #${ucMatch[1]})` : policyMatch ? ` (Policy #${policyMatch[1]})` : '';
+        // Ongoing status must be checked against the booking's FULL history
+        // (every day it touched), not just today's entries — a booking that
+        // started yesterday and is still open needs to correctly show as
+        // ongoing even when viewing today's slice of its log.
+        const fullBookingEntries = entries.filter(e => e.bookingId === key);
+        const info = getBookingLifecycleInfo(fullBookingEntries);
+        isOngoing = info.isOngoing;
+        const idSuffix = info.ucNumber ? ` (UC #${info.ucNumber})` : info.policyNumber ? ` (Policy #${info.policyNumber})` : info.hbTaskNumber ? ` (Task #${info.hbTaskNumber})` : '';
         const operators = [...new Set(groupEntries.map(e => e.operator).filter(Boolean))];
         const first = groupEntries[groupEntries.length - 1].timestamp;
         const last = groupEntries[0].timestamp;
-        title = `${type}${idSuffix}`;
+        title = `${info.type}${idSuffix}`;
         meta = `${escapeHtml(operators.join(', ') || '—')} — ${first} to ${last} — ${groupEntries.length} ${groupEntries.length === 1 ? 'entry' : 'entries'}`;
       } else {
         meta = `${groupEntries.length} ${groupEntries.length === 1 ? 'entry' : 'entries'}`;
       }
 
-      return { key, groupEntries, mostRecentSortVal, title, meta };
+      return { key, groupEntries, mostRecentSortVal, title, meta, isOngoing };
     }).sort((a, b) => b.mostRecentSortVal - a.mostRecentSortVal);
 
     rebuildLogTabColorMap(groupList);
@@ -1232,6 +1252,18 @@ let entries = [];
     const visibleGroups = (currentLogTabFilter === '__all__')
       ? groupList
       : groupList.filter(g => g.key === currentLogTabFilter);
+
+    if (reopenBar) {
+      const singleGroup = (currentLogTabFilter !== '__all__') ? visibleGroups[0] : null;
+      const showReopen = singleGroup && currentLogTabFilter !== '__unassigned__' && !singleGroup.isOngoing;
+      reopenBar.style.display = showReopen ? 'flex' : 'none';
+      if (showReopen) {
+        reopenBar.innerHTML = `
+          <span>This booking is closed — ${escapeHtml(singleGroup.title)}</span>
+          <button onclick="reopenBooking('${singleGroup.key}')">↩ Reopen This Booking</button>
+        `;
+      }
+    }
 
     body.innerHTML = visibleGroups.map(g => `
       ${currentLogTabFilter === '__all__' ? `
@@ -2159,22 +2191,7 @@ let entries = [];
 
     const sessions = Object.keys(byBooking).map((bookingId, i) => {
       const seg = byBooking[bookingId].sort((a, b) => (entrySortValue(a) - entrySortValue(b)) || (a.seq - b.seq));
-      const startEntry = seg.find(e => e.type === 'Session' && /new session started/i.test(e.note || ''));
-      const endEntry = [...seg].reverse().find(e => e.type === 'Session' && /^session ended/i.test(e.note || ''));
-
-      let type = 'Unknown';
-      let policyNumber = null;
-      let ucNumber = null;
-      if (startEntry) {
-        const note = startEntry.note || '';
-        const policyMatch = note.match(/\(Policy #(\d+)\)\s*$/);
-        const ucMatch = note.match(/\(UC #(\d+)\)\s*$/);
-        policyNumber = policyMatch ? policyMatch[1] : null;
-        ucNumber = ucMatch ? ucMatch[1] : null;
-        const noteClean = note.replace(/\s*\(Policy #\d+\)\s*$/, '').replace(/\s*\(UC #\d+\)\s*$/, '');
-        const typeMatch = noteClean.match(/—\s*(.+)$/);
-        type = typeMatch ? typeMatch[1].trim() : 'Unknown';
-      }
+      const info = getBookingLifecycleInfo(seg);
 
       const operators = [...new Set(seg.map(e => e.operator).filter(Boolean))];
       const sorted = seg.slice().sort((a, b) => (entrySortValue(a) - entrySortValue(b)) || (a.seq - b.seq));
@@ -2182,15 +2199,16 @@ let entries = [];
       return {
         id: bookingId,
         index: i + 1,
-        type: type,
-        policyNumber: ucNumber ? null : policyNumber,
-        ucNumber: ucNumber,
+        type: info.type,
+        policyNumber: info.ucNumber ? null : info.policyNumber,
+        ucNumber: info.ucNumber,
+        hbTaskNumber: info.hbTaskNumber,
         operators: operators.join(', ') || '—',
         startDate: sorted[0].date,
         startTime: sorted[0].timestamp,
         endDate: sorted[sorted.length - 1].date,
         endTime: sorted[sorted.length - 1].timestamp,
-        ongoing: !endEntry,
+        ongoing: info.isOngoing,
         entries: seg
       };
     });
@@ -2872,6 +2890,82 @@ let entries = [];
     return `booking_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   }
 
+  // Single source of truth for "is this booking currently open, and what
+  // is it." A booking can be started, ended, and reopened more than once —
+  // what determines current status is whichever of those three most
+  // recently happened, never just "has an ended entry ever occurred."
+  // Every function that needs booking status or its type/UC#/Policy#/Task#
+  // should call this rather than re-deriving it, so a fix or a new
+  // lifecycle event (like Reopen) only has to be taught in one place.
+  function getBookingLifecycleInfo(bookingEntries) {
+    const seg = bookingEntries.slice().sort((a, b) => (entrySortValue(a) - entrySortValue(b)) || (a.seq - b.seq));
+    const startEntry = seg.find(e => e.type === 'Session' && /new session started/i.test(e.note || ''));
+
+    const lifecycleEvents = seg.filter(e => e.type === 'Session' && (
+      /new session started/i.test(e.note || '') ||
+      /^session ended/i.test(e.note || '') ||
+      /^session reopened/i.test(e.note || '')
+    ));
+    const mostRecent = lifecycleEvents[lifecycleEvents.length - 1];
+    const isOngoing = !!startEntry && !!mostRecent && !/^session ended/i.test(mostRecent.note || '');
+
+    let type = 'Unknown';
+    let policyNumber = null;
+    let ucNumber = null;
+    let hbTaskNumber = null;
+    if (startEntry) {
+      const note = startEntry.note || '';
+      const policyMatch = note.match(/\(Policy #(\d+)\)\s*$/);
+      const ucMatch = note.match(/\(UC #(\d+)\)\s*$/);
+      const hbMatch = note.match(/\(Task #(\d+)(?:,[^)]*)?\)\s*$/);
+      policyNumber = policyMatch ? policyMatch[1] : null;
+      ucNumber = ucMatch ? ucMatch[1] : null;
+      hbTaskNumber = hbMatch ? hbMatch[1] : null;
+      const noteClean = note.replace(/\s*\(Policy #\d+\)\s*$/, '').replace(/\s*\(UC #\d+\)\s*$/, '').replace(/\s*\(Task #\d+(?:,[^)]*)?\)\s*$/, '');
+      const typeMatch = noteClean.match(/—\s*(.+)$/);
+      type = typeMatch ? typeMatch[1].trim() : 'Unknown';
+    }
+
+    return { startEntry, mostRecentLifecycleEntry: mostRecent, isOngoing, type, policyNumber, ucNumber, hbTaskNumber };
+  }
+
+  // Reopens a booking that's already been ended, so new Task/Downtime/Lunch
+  // entries can be logged under the SAME bookingId again instead of
+  // starting a disconnected new one. Reuses the exact type/UC#/Policy#/
+  // Task# the booking originally had — nothing needs to be re-entered.
+  function reopenBooking(bookingId) {
+    resetIdleTimer();
+    if (myBookingId) {
+      showStatus('⚠ Leave or end your current booking before reopening another one');
+      return;
+    }
+    if (!canLogRightNow()) {
+      showStatus(isViewingToday() ? '⚠ After 6:30 PM — view only, logging resumes tomorrow' : '⚠ Switch to today to reopen a booking');
+      return;
+    }
+    const bookingEntries = entries.filter(e => e.bookingId === bookingId);
+    if (bookingEntries.length === 0) {
+      showStatus('⚠ Could not find that booking');
+      return;
+    }
+    const info = getBookingLifecycleInfo(bookingEntries);
+    if (info.isOngoing) {
+      showStatus('⚠ That booking is already open — join it instead');
+      renderActiveBookingsList();
+      return;
+    }
+    const idSuffix = info.ucNumber ? ` (UC #${info.ucNumber})` : info.policyNumber ? ` (Policy #${info.policyNumber})` : info.hbTaskNumber ? ` (Task #${info.hbTaskNumber})` : '';
+    logEntry('Session', `Session reopened — ${info.type}${idSuffix}`, null, null, bookingId);
+    attachToBooking(
+      bookingId,
+      info.type,
+      info.policyNumber ? parseInt(info.policyNumber, 10) : null,
+      info.ucNumber ? parseInt(info.ucNumber, 10) : null,
+      info.hbTaskNumber ? parseInt(info.hbTaskNumber, 10) : null
+    );
+    showStatus(`Reopened ${info.type}`);
+  }
+
   function bookingIdentifier(type, ucNum, policyNum, hbTaskNum) {
     // The thing that makes a booking "the same" for join-vs-start purposes:
     // for UC Data Collect it's the UC number; for Policy Training it's the
@@ -2896,28 +2990,20 @@ let entries = [];
     const active = [];
     Object.keys(byId).forEach(bookingId => {
       const evs = byId[bookingId].sort((a, b) => (entrySortValue(a) - entrySortValue(b)) || (a.seq - b.seq));
-      const startEv = evs.find(e => /new session started/i.test(e.note || ''));
-      const endEv = evs.find(e => /^session ended/i.test(e.note || ''));
-      if (!startEv || endEv) return; // no start, or already closed — not active
-
-      const note = startEv.note || '';
-      const policyMatch = note.match(/\(Policy #(\d+)\)\s*$/);
-      const ucMatch = note.match(/\(UC #(\d+)\)\s*$/);
-      const hbMatch = note.match(/\(Task #(\d+)(?:,[^)]*)?\)\s*$/);
-      let noteClean = note.replace(/\s*\(Policy #\d+\)\s*$/, '').replace(/\s*\(UC #\d+\)\s*$/, '').replace(/\s*\(Task #\d+(?:,[^)]*)?\)\s*$/, '');
-      const typeMatch = noteClean.match(/—\s*(.+)$/);
+      const info = getBookingLifecycleInfo(evs);
+      if (!info.startEntry || !info.isOngoing) return;
 
       const operators = [...new Set(evs.map(e => e.operator).filter(Boolean))];
 
       active.push({
         bookingId,
-        type: typeMatch ? typeMatch[1].trim() : 'Unknown',
-        policyNumber: policyMatch ? policyMatch[1] : null,
-        ucNumber: ucMatch ? ucMatch[1] : null,
-        hbTaskNumber: hbMatch ? hbMatch[1] : null,
+        type: info.type,
+        policyNumber: info.policyNumber,
+        ucNumber: info.ucNumber,
+        hbTaskNumber: info.hbTaskNumber,
         operators: operators.join(', ') || '—',
-        startDate: startEv.date,
-        startTime: startEv.timestamp
+        startDate: info.startEntry.date,
+        startTime: info.startEntry.timestamp
       });
     });
     return active;
@@ -3132,9 +3218,36 @@ let entries = [];
       showStatus('⚠ End Lunch before ending the booking');
       return;
     }
-    const idSuffix = currentUcNumber ? ` (UC #${currentUcNumber})` : currentPolicyNumber ? ` (Policy #${currentPolicyNumber})` : '';
+    const idSuffix = currentUcNumber ? ` (UC #${currentUcNumber})` : currentPolicyNumber ? ` (Policy #${currentPolicyNumber})` : currentHbTaskNumber ? ` (Task #${currentHbTaskNumber})` : '';
     logEntry('Session', `Session ended — ${mainSessionType}${idSuffix}`, null, null, myBookingId);
     showStatus('Booking ended');
+    detachFromMyBooking();
+  }
+
+  // Distinct from ending: this detaches YOU from the booking so you're free
+  // to join or start something else, but the booking record itself stays
+  // open — for whoever else is on it, or for you to rejoin later via the
+  // same Join button already used for active bookings. Same safety checks
+  // as ending, since leaving with something still mid-log would orphan it
+  // exactly the same way ending would.
+  function leaveBooking() {
+    resetIdleTimer();
+    if (!myBookingId) return;
+    if (taskInProgress) {
+      showStatus('⚠ Stop the Run Time before leaving the booking');
+      return;
+    }
+    if (downtimeInProgress) {
+      showStatus('⚠ End Downtime before leaving the booking');
+      return;
+    }
+    if (lunchInProgress) {
+      showStatus('⚠ End Lunch before leaving the booking');
+      return;
+    }
+    const idSuffix = currentUcNumber ? ` (UC #${currentUcNumber})` : currentPolicyNumber ? ` (Policy #${currentPolicyNumber})` : currentHbTaskNumber ? ` (Task #${currentHbTaskNumber})` : '';
+    logEntry('Session', `Left booking — ${mainSessionType}${idSuffix}`, null, null, myBookingId);
+    showStatus('Left the booking — it stays open for anyone else on it, or for you to rejoin later');
     detachFromMyBooking();
   }
 

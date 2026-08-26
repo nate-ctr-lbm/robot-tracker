@@ -142,7 +142,8 @@
 
     <div class="my-booking-status" id="myBookingStatus">You're not attached to a booking yet.</div>
     <div class="buttons" id="endBookingRow" style="display:none; margin-bottom:14px;">
-      <button class="btn-session" style="grid-column: 1 / -1;" onclick="endBooking()">⏹ End This Booking</button>
+      <button class="btn-session" onclick="endBooking()">⏹ End This Booking</button>
+      <button class="btn-session-secondary" onclick="leaveBooking()">↩ Leave (keep it open)</button>
     </div>
 
     <div class="active-bookings-header">Active Bookings Right Now</div>
@@ -338,6 +339,7 @@
         <span id="entryCount">0 entries</span>
       </div>
       <div class="log-tab-bar" id="logTabBar"></div>
+      <div class="log-reopen-bar" id="logReopenBar" style="display:none;"></div>
       <table id="logTable">
         <thead>
           <tr><th>Date</th><th>Time</th><th>Type</th><th>Operator</th><th>Note</th><th></th></tr>
