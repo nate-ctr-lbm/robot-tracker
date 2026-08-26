@@ -1213,6 +1213,17 @@
   .task-progress-wrap {
     margin-top: 10px;
   }
+  .task-progress-elapsed-big {
+    font-family: var(--font-data);
+    font-size: 34px;
+    font-weight: 600;
+    color: var(--accent);
+    text-align: center;
+    margin-bottom: 8px;
+  }
+  .task-progress-elapsed-big.over-target {
+    color: var(--accent2);
+  }
   .task-progress-bar {
     height: 8px;
     border-radius: 2px;

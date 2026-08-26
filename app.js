@@ -870,9 +870,12 @@ let entries = [];
       return;
     }
     const elapsedSeconds = Math.round((new Date() - taskStartTimestamp) / 1000);
+    const bigDisplay = document.getElementById('taskProgressElapsedBig');
     const label = document.getElementById('taskProgressLabel');
     const fill = document.getElementById('taskProgressFill');
     if (!label || !fill) return;
+
+    if (bigDisplay) bigDisplay.textContent = formatDuration(elapsedSeconds);
 
     if (currentTargetMinutes) {
       const targetSeconds = currentTargetMinutes * 60;
@@ -880,13 +883,15 @@ let entries = [];
       fill.style.width = pct + '%';
       fill.classList.toggle('over-target', elapsedSeconds > targetSeconds);
       const remaining = targetSeconds - elapsedSeconds;
+      if (bigDisplay) bigDisplay.classList.toggle('over-target', elapsedSeconds > targetSeconds);
       label.textContent = remaining >= 0
-        ? `${formatDuration(elapsedSeconds)} elapsed — ${formatDuration(remaining)} left of ${currentTargetMinutes}m target`
-        : `${formatDuration(elapsedSeconds)} elapsed — ${formatDuration(-remaining)} over the ${currentTargetMinutes}m target`;
+        ? `${formatDuration(remaining)} left of ${currentTargetMinutes}m target`
+        : `${formatDuration(-remaining)} over the ${currentTargetMinutes}m target`;
     } else {
       fill.style.width = '100%';
       fill.classList.remove('over-target');
-      label.textContent = `${formatDuration(elapsedSeconds)} elapsed — no target set`;
+      if (bigDisplay) bigDisplay.classList.remove('over-target');
+      label.textContent = 'No target set';
     }
   }
 
