@@ -261,10 +261,13 @@ let entries = [];
       return;
     }
     resetIdleTimer();
-    // If downtime is currently open and we're about to start a new task,
-    // close the downtime first so it doesn't overlap with active work.
+    // If downtime or lunch is currently open and we're about to start a new
+    // task, close it first so it doesn't overlap with active work.
     if (!taskInProgress && downtimeInProgress) {
       autoCloseDowntime('task started');
+    }
+    if (!taskInProgress && lunchInProgress) {
+      autoCloseLunch('task started');
     }
 
     const noteInput = document.getElementById('noteInput');
@@ -341,6 +344,10 @@ let entries = [];
     resetIdleTimer();
     const categorySelect = document.getElementById('downtimeCategorySelect');
 
+    if (!downtimeInProgress && lunchInProgress) {
+      autoCloseLunch('downtime started');
+    }
+
     if (!downtimeInProgress && !categorySelect.value) {
       showStatus('⚠ Pick a downtime reason before starting');
       categorySelect.focus();
@@ -385,6 +392,68 @@ let entries = [];
     btn.textContent = downtimeInProgress ? '▶ End Downtime' : '⏸ Start Downtime';
   }
 
+  function autoCloseLunch(reason) {
+    if (!lunchInProgress || !lunchStartTimestamp) return;
+    const durationSeconds = Math.round((new Date() - lunchStartTimestamp) / 1000);
+    logEntry('Lunch', `Lunch ended (${formatDuration(durationSeconds)}) — auto-closed: ${reason}`, durationSeconds);
+    lunchInProgress = false;
+    lunchStartTimestamp = null;
+    updateLunchButton();
+    updateTotals();
+  }
+
+  function handleLunchAction() {
+    if (sessionEnded) {
+      showStatus('⚠ Start a Session first');
+      return;
+    }
+    if (!canLogRightNow() && !lunchInProgress) {
+      showStatus('⚠ After 6:30 PM — view only, logging resumes tomorrow');
+      return;
+    }
+    resetIdleTimer();
+
+    // Lunch, Downtime, and Run Time are mutually exclusive — starting one
+    // cleanly closes whichever of the other two happens to be open, same
+    // as Downtime already does when a task starts.
+    if (!lunchInProgress) {
+      if (downtimeInProgress) autoCloseDowntime('lunch started');
+      if (taskInProgress) {
+        const durationSeconds = taskStartTimestamp ? Math.round((new Date() - taskStartTimestamp) / 1000) : 0;
+        logEntry('Active', `Task ${currentTaskNumber} completed (${formatDuration(durationSeconds)}) — auto-closed: lunch started`, durationSeconds);
+        taskInProgress = false;
+        taskStartTimestamp = null;
+        updateTaskButton();
+      }
+    }
+
+    let baseNote, durationSeconds = null;
+
+    if (lunchInProgress) {
+      baseNote = 'Lunch ended';
+      if (lunchStartTimestamp) {
+        durationSeconds = Math.round((new Date() - lunchStartTimestamp) / 1000);
+        baseNote += ` (${formatDuration(durationSeconds)})`;
+      }
+    } else {
+      baseNote = 'Lunch started';
+      lunchStartTimestamp = new Date();
+    }
+
+    logEntry('Lunch', baseNote, durationSeconds);
+
+    lunchInProgress = !lunchInProgress;
+    if (!lunchInProgress) lunchStartTimestamp = null;
+    updateLunchButton();
+    updateTotals();
+  }
+
+  function updateLunchButton() {
+    const btn = document.getElementById('lunchActionBtn');
+    if (!btn) return;
+    btn.textContent = lunchInProgress ? '▶ End Lunch' : '🍽 Start Lunch';
+  }
+
   function formatDuration(totalSeconds) {
     totalSeconds = Math.max(0, Math.round(totalSeconds));
     const h = Math.floor(totalSeconds / 3600);
@@ -403,6 +472,9 @@ let entries = [];
     pill.classList.remove('pill-working', 'pill-downtime', 'pill-lunch', 'pill-deadtime');
 
     if (!sessionEnded && mainSessionType === 'Lunch') {
+      pill.classList.add('pill-lunch');
+      text.textContent = 'On Lunch Break';
+    } else if (lunchInProgress) {
       pill.classList.add('pill-lunch');
       text.textContent = 'On Lunch Break';
     } else if (taskInProgress) {
@@ -426,6 +498,7 @@ let entries = [];
     let tasksCompleted = 0;
     let totalDowntimeSeconds = 0;
     let totalDeadTimeSeconds = 0;
+    let totalSubStateLunchSeconds = 0;
 
     // Build a lookup of task-number -> start timestamp (in seconds-of-day),
     // taking entries in chronological order so each "started" pairs with
@@ -434,6 +507,7 @@ let entries = [];
     // each other's duration calculations.
     const openStarts = {};
     const openDowntimeStartByBooking = {};
+    const openLunchStartByBooking = {};
     let openDeadTimeStart = null; // Dead Time deliberately stays global — see note in inferTaskNumberFromEntries
 
     sorted.forEach(e => {
@@ -443,6 +517,8 @@ let entries = [];
       const completeMatch = note.match(/task\s+(\d+)\s+(completed|compled)/i);
       const downtimeStartMatch = /downtime\s+started/i.test(note);
       const downtimeEndMatch = /downtime\s+(ended|completed)/i.test(note);
+      const lunchStartMatch = e.type === 'Lunch' && /lunch\s+started/i.test(note);
+      const lunchEndMatch = e.type === 'Lunch' && /lunch\s+(ended|completed)/i.test(note);
       const deadTimeStartMatch = /dead time\s+started/i.test(note);
       const deadTimeEndMatch = /dead time\s+(ended|completed)/i.test(note);
 
@@ -468,6 +544,16 @@ let entries = [];
           if (diff > 0) totalDowntimeSeconds += diff;
         }
         delete openDowntimeStartByBooking[bk];
+      } else if (lunchStartMatch) {
+        openLunchStartByBooking[bk] = timeToMinutes(e.timestamp);
+      } else if (lunchEndMatch) {
+        if (typeof e.durationSeconds === 'number') {
+          totalSubStateLunchSeconds += e.durationSeconds;
+        } else if (openLunchStartByBooking.hasOwnProperty(bk)) {
+          const diff = timeToMinutes(e.timestamp) - openLunchStartByBooking[bk];
+          if (diff > 0) totalSubStateLunchSeconds += diff;
+        }
+        delete openLunchStartByBooking[bk];
       } else if (deadTimeStartMatch) {
         openDeadTimeStart = timeToMinutes(e.timestamp);
       } else if (deadTimeEndMatch) {
@@ -501,6 +587,10 @@ let entries = [];
       if (diff < 0) diff += 24 * 3600;
       totalLunchSeconds += diff;
     });
+    // Combine both sources of lunch time: whole Lunch-type bookings, plus
+    // in-booking lunch sub-states (the toggle used while staying attached
+    // to an ongoing booking like UC #2).
+    totalLunchSeconds += totalSubStateLunchSeconds;
 
     return { totalSeconds, tasksCompleted, totalDowntimeSeconds, totalLunchSeconds, totalDeadTimeSeconds };
   }
@@ -840,11 +930,12 @@ let entries = [];
     if (totalElapsed <= 0) totalElapsed = 1;
 
     const downtimeSecs = computeCategorySecondsInSegment(currentSeg, 'downtime');
-    const activeSecs = Math.max(0, totalElapsed - downtimeSecs);
+    const lunchSecs = computeCategorySecondsInSegment(currentSeg, 'lunch');
+    const activeSecs = Math.max(0, totalElapsed - downtimeSecs - lunchSecs);
 
     document.getElementById('segActive').style.width = (activeSecs / totalElapsed * 100) + '%';
     document.getElementById('segDowntime').style.width = (downtimeSecs / totalElapsed * 100) + '%';
-    document.getElementById('segLunch').style.width = '0%';
+    document.getElementById('segLunch').style.width = (lunchSecs / totalElapsed * 100) + '%';
     document.getElementById('sessionProgressOperator').textContent = currentOperator || '—';
     document.getElementById('sessionProgressElapsed').textContent = formatDuration(totalElapsed) + ' elapsed';
   }
@@ -897,6 +988,10 @@ let entries = [];
         pausedDowntimeElapsed = new Date() - downtimeStartTimestamp;
         downtimeStartTimestamp = null;
       }
+      if (lunchInProgress && lunchStartTimestamp) {
+        pausedLunchElapsed = new Date() - lunchStartTimestamp;
+        lunchStartTimestamp = null;
+      }
       showStatus('Clock paused');
     } else {
       btn.textContent = '⏸ Pause Clock';
@@ -909,6 +1004,10 @@ let entries = [];
       if (downtimeInProgress && pausedDowntimeElapsed !== null) {
         downtimeStartTimestamp = new Date(new Date() - pausedDowntimeElapsed);
         pausedDowntimeElapsed = null;
+      }
+      if (lunchInProgress && pausedLunchElapsed !== null) {
+        lunchStartTimestamp = new Date(new Date() - pausedLunchElapsed);
+        pausedLunchElapsed = null;
       }
       tick();
       showStatus('Clock resumed');
@@ -2532,6 +2631,23 @@ let entries = [];
       downtimeStartTimestamp = null;
     }
 
+    // Lunch sub-state — scoped to MY booking AND operator, exactly like
+    // Downtime above. This scoping is what prevents the original bug
+    // (one person's lunch getting auto-closed by a DIFFERENT person's task
+    // start, when multiple operators share one booking) from coming back.
+    const lunchEvents = getTodayEntries()
+      .filter(e => e.type === 'Lunch' && e.bookingId === myBookingId && e.operator === currentOperator)
+      .slice()
+      .sort((a, b) => (entrySortValue(a) - entrySortValue(b)) || (a.seq - b.seq));
+    if (lunchEvents.length > 0) {
+      const last = lunchEvents[lunchEvents.length - 1];
+      lunchInProgress = /started/i.test(last.note || '');
+      lunchStartTimestamp = lunchInProgress ? parseTimestampToDate(last.timestamp) : null;
+    } else {
+      lunchInProgress = false;
+      lunchStartTimestamp = null;
+    }
+
     // Dead Time deliberately stays global (bookingId is always null for
     // these entries by design) — it represents "not attached to any
     // booking," which isn't a per-booking concept the same way task/
@@ -2725,11 +2841,12 @@ let entries = [];
     // read-only history, and not after the 6:30 PM cutoff) — this is the
     // "order of operations" enforcement.
     const enabled = !sessionEnded && canLogRightNow();
-    ['taskActionBtn', 'downtimeActionBtn'].forEach(id => {
+    ['taskActionBtn', 'downtimeActionBtn', 'lunchActionBtn'].forEach(id => {
       const btn = document.getElementById(id);
       if (!btn) return;
       const isMidAction = (id === 'taskActionBtn' && taskInProgress) ||
-                           (id === 'downtimeActionBtn' && downtimeInProgress);
+                           (id === 'downtimeActionBtn' && downtimeInProgress) ||
+                           (id === 'lunchActionBtn' && lunchInProgress);
       if (isMidAction) {
         // A "stop what you're currently doing" button must ALWAYS be
         // clickable, no matter what — force it enabled rather than leaving
@@ -3004,6 +3121,10 @@ let entries = [];
     }
     if (downtimeInProgress) {
       showStatus('⚠ End Downtime before ending the booking');
+      return;
+    }
+    if (lunchInProgress) {
+      showStatus('⚠ End Lunch before ending the booking');
       return;
     }
     const idSuffix = currentUcNumber ? ` (UC #${currentUcNumber})` : currentPolicyNumber ? ` (Policy #${currentPolicyNumber})` : '';
