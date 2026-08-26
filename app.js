@@ -1254,13 +1254,17 @@ let entries = [];
       : groupList.filter(g => g.key === currentLogTabFilter);
 
     if (reopenBar) {
-      const singleGroup = (currentLogTabFilter !== '__all__') ? visibleGroups[0] : null;
-      const showReopen = singleGroup && currentLogTabFilter !== '__unassigned__' && !singleGroup.isOngoing;
-      reopenBar.style.display = showReopen ? 'flex' : 'none';
-      if (showReopen) {
+      const singleGroup = (currentLogTabFilter !== '__all__' && currentLogTabFilter !== '__unassigned__') ? visibleGroups[0] : null;
+      reopenBar.style.display = singleGroup ? 'flex' : 'none';
+      if (singleGroup) {
+        const statusText = singleGroup.isOngoing ? 'This booking is open' : 'This booking is closed';
+        const reopenBtn = singleGroup.isOngoing ? '' : `<button onclick="reopenBooking('${singleGroup.key}')">↩ Reopen This Booking</button>`;
         reopenBar.innerHTML = `
-          <span>This booking is closed — ${escapeHtml(singleGroup.title)}</span>
-          <button onclick="reopenBooking('${singleGroup.key}')">↩ Reopen This Booking</button>
+          <span>${statusText} — ${escapeHtml(singleGroup.title)}</span>
+          <span class="log-reopen-bar-actions">
+            <button class="secondary" onclick="relabelBooking('${singleGroup.key}')">Relabel</button>
+            ${reopenBtn}
+          </span>
         `;
       }
     }
@@ -1838,6 +1842,43 @@ let entries = [];
       .map(g => ({ startLabel: secondsToClockLabel(g[0]), endLabel: secondsToClockLabel(g[1]), seconds: g[1] - g[0] }));
   }
 
+  // Sums each individual active period for a booking (start-to-end, or
+  // reopen-to-end) rather than treating "first entry to last entry" as one
+  // continuous span. A booking that was left/ended and later reopened has
+  // a real gap in between — counting that gap as part of the duration
+  // would overstate it, sometimes dramatically if the reopen happened
+  // hours or days later.
+  function computeBookingActiveSpanSeconds(seg) {
+    const lifecycleEvents = seg.filter(e => e.type === 'Session' && (
+      /new session started/i.test(e.note || '') ||
+      /^session ended/i.test(e.note || '') ||
+      /^session reopened/i.test(e.note || '')
+    ));
+    let total = 0;
+    let openStart = null;
+    lifecycleEvents.forEach(e => {
+      const isOpen = /new session started/i.test(e.note || '') || /^session reopened/i.test(e.note || '');
+      const isClose = /^session ended/i.test(e.note || '');
+      if (isOpen) {
+        openStart = timeToMinutes(e.timestamp);
+      } else if (isClose && openStart !== null) {
+        let diff = timeToMinutes(e.timestamp) - openStart;
+        if (diff < 0) diff += 24 * 3600;
+        total += diff;
+        openStart = null;
+      }
+    });
+    if (openStart !== null) {
+      // Still open right now — count up to the current moment.
+      const now = new Date();
+      const nowSeconds = now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds();
+      let diff = nowSeconds - openStart;
+      if (diff < 0) diff += 24 * 3600;
+      total += diff;
+    }
+    return total;
+  }
+
   function computeSessionSummaries(sortedEntries) {
     // Group by actual bookingId — same fix already applied to renderSessionsPanel.
     // Naive chronological splitting (on any "new session started" marker)
@@ -1858,17 +1899,15 @@ let entries = [];
     return segments.filter(s => s.length > 0).map((seg, i) => {
       const startTs = seg[0].timestamp;
       const lastTs = seg[seg.length - 1].timestamp;
-      const endEntry = [...seg].reverse().find(e => /^session ended/i.test(e.note || ''));
-      const isOngoing = !endEntry;
-      const startSec = timeToMinutes(startTs);
-      const lastSec = timeToMinutes(lastTs);
-      let rawSpan = lastSec - startSec;
-      if (rawSpan < 0) rawSpan += 24 * 3600;
+      const info = getBookingLifecycleInfo(seg);
+      const isOngoing = info.isOngoing;
       const downtimeSecs = computeCategorySecondsInSegment(seg, 'downtime');
 
-      // No lunch subtraction — Lunch is its own separate booking now, so
-      // it was never part of this segment's own span to begin with.
-      let withDowntime = rawSpan;
+      // Sum each active period rather than a naive first-to-last span —
+      // this is what correctly combines a booking that was left/ended and
+      // later reopened into one accurate total, instead of counting the
+      // gap in between as if it were active time.
+      let withDowntime = computeBookingActiveSpanSeconds(seg);
       if (withDowntime < 0) withDowntime = 0;
       let withoutDowntime = withDowntime - downtimeSecs;
       if (withoutDowntime < 0) withoutDowntime = 0;
@@ -2966,6 +3005,82 @@ let entries = [];
     showStatus(`Reopened ${info.type}`);
   }
 
+  // Lets a booking's type/UC#/Policy#/Task# be corrected after the fact —
+  // works whether the booking is still active or already closed, since
+  // everything downstream (Active Bookings, Session Log tabs, exports,
+  // summaries) derives its label fresh from this one entry's note text
+  // via getBookingLifecycleInfo, rather than from any separately-stored
+  // value. Updating this one entry is enough for the change to appear
+  // everywhere the booking's label is shown.
+  function relabelBooking(bookingId) {
+    const bookingEntries = entries.filter(e => e.bookingId === bookingId);
+    if (bookingEntries.length === 0) {
+      showStatus('⚠ Could not find that booking');
+      return;
+    }
+    const startEntry = bookingEntries.find(e => e.type === 'Session' && /new session started/i.test(e.note || ''));
+    if (!startEntry) {
+      showStatus('⚠ Could not find this booking\u2019s start entry to relabel');
+      return;
+    }
+    const info = getBookingLifecycleInfo(bookingEntries);
+    const validTypes = ['Sim Data Collect', 'UC Data Collect', 'Policy Training', 'Lunch', 'Household Bridge Data Collection'];
+    const currentIdSuffix = info.ucNumber ? ` (UC #${info.ucNumber})` : info.policyNumber ? ` (Policy #${info.policyNumber})` : info.hbTaskNumber ? ` (Task #${info.hbTaskNumber})` : '';
+
+    const typed = prompt(
+      `Relabel this booking.\n\nCurrently: ${info.type}${currentIdSuffix}\n\nEnter the new type — one of:\n${validTypes.join(', ')}\n(or type something custom):`,
+      info.type
+    );
+    if (typed === null || !typed.trim()) return; // cancelled
+    const newType = typed.trim();
+
+    let newUcNumber = null, newPolicyNumber = null, newHbTaskNumber = null;
+    if (newType === 'UC Data Collect') {
+      const val = prompt('UC #:', info.ucNumber || '');
+      const n = parseInt(val, 10);
+      if (!n || n < 1) { showStatus('⚠ UC Data Collect needs a valid UC # — relabel cancelled'); return; }
+      newUcNumber = n;
+    } else if (newType === 'Policy Training') {
+      const val = prompt('Policy # (optional — leave blank for none):', info.policyNumber || '');
+      const n = parseInt(val, 10);
+      if (n > 0) newPolicyNumber = n;
+    } else if (newType === 'Household Bridge Data Collection') {
+      const val = prompt('Task #:', info.hbTaskNumber || '');
+      const n = parseInt(val, 10);
+      if (!n || n < 1) { showStatus('⚠ Household Bridge needs a valid Task # — relabel cancelled'); return; }
+      newHbTaskNumber = n;
+    }
+
+    const idSuffix = newUcNumber ? ` (UC #${newUcNumber})` : newPolicyNumber ? ` (Policy #${newPolicyNumber})` : newHbTaskNumber ? ` (Task #${newHbTaskNumber})` : '';
+    const newNote = `New session started — ${newType}${idSuffix}`;
+    startEntry.note = newNote;
+
+    if (supabaseClient && !String(startEntry.id).startsWith('local_')) {
+      supabaseClient.from('entries').update({ note: newNote }).eq('id', startEntry.id)
+        .then(({ error }) => {
+          if (error) {
+            console.warn('Relabel sync failed:', error);
+            setSyncStatus('offline — relabel not yet synced', 'status-error');
+          }
+        });
+    }
+
+    // If THIS device is currently attached to the booking being relabeled,
+    // update the local state too so the UI reflects it immediately rather
+    // than waiting for the next re-render to re-derive it from scratch.
+    if (myBookingId === bookingId) {
+      mainSessionType = newType;
+      currentUcNumber = newUcNumber;
+      currentPolicyNumber = newPolicyNumber;
+      currentHbTaskNumber = newHbTaskNumber;
+      updateSessionButton();
+    }
+
+    renderLog();
+    renderActiveBookingsList();
+    showStatus(`Relabeled to ${newType}${idSuffix}`);
+  }
+
   function bookingIdentifier(type, ucNum, policyNum, hbTaskNum) {
     // The thing that makes a booking "the same" for join-vs-start purposes:
     // for UC Data Collect it's the UC number; for Policy Training it's the
@@ -3268,10 +3383,12 @@ let entries = [];
 
   function updateSessionButton() {
     const status = document.getElementById('myBookingStatus');
+    const relabelRow = document.getElementById('relabelActiveRow');
     if (status) {
       if (sessionEnded) {
         status.textContent = "You're not attached to a booking yet.";
         status.classList.remove('active');
+        if (relabelRow) relabelRow.style.display = 'none';
       } else {
         const idText = currentUcNumber ? ` (UC #${currentUcNumber})` : currentPolicyNumber ? ` (Policy #${currentPolicyNumber})` : currentHbTaskNumber ? ` (Task #${currentHbTaskNumber})` : '';
         let progressText = '';
@@ -3281,9 +3398,15 @@ let entries = [];
         }
         status.textContent = `You're on: ${mainSessionType}${idText}${progressText}`;
         status.classList.add('active');
+        if (relabelRow) relabelRow.style.display = 'block';
       }
     }
     updateWorkControlsGating();
+  }
+
+  function relabelMyCurrentBooking() {
+    if (!myBookingId) return;
+    relabelBooking(myBookingId);
   }
 
 

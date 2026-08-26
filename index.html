@@ -141,9 +141,12 @@
     </div>
 
     <div class="my-booking-status" id="myBookingStatus">You're not attached to a booking yet.</div>
-    <div class="buttons" id="endBookingRow" style="display:none; margin-bottom:14px;">
+    <div class="buttons" id="endBookingRow" style="display:none; margin-bottom:8px;">
       <button class="btn-session" onclick="endBooking()">⏹ End This Booking</button>
       <button class="btn-session-secondary" onclick="leaveBooking()">↩ Leave (keep it open)</button>
+    </div>
+    <div id="relabelActiveRow" style="display:none; margin-bottom:14px; text-align:center;">
+      <a href="#" class="relabel-link" onclick="relabelMyCurrentBooking(); return false;">Mislabeled? Relabel this booking</a>
     </div>
 
     <div class="active-bookings-header">Active Bookings Right Now</div>
