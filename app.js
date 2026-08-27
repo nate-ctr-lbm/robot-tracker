@@ -1130,6 +1130,12 @@ let entries = [];
   }
 
   let currentLogTabFilter = '__all__';
+  let bookingOperatorBreakdownOpenFor = null;
+
+  function toggleBookingOperatorBreakdown(bookingId) {
+    bookingOperatorBreakdownOpenFor = (bookingOperatorBreakdownOpenFor === bookingId) ? null : bookingId;
+    renderLog();
+  }
 
   // A small palette that stays consistent with the app's existing accent
   // colors rather than introducing clashing, overly-bright hues. "All" and
@@ -1264,8 +1270,32 @@ let entries = [];
           <span>${statusText} — ${escapeHtml(singleGroup.title)}</span>
           <span class="log-reopen-bar-actions">
             <button class="secondary" onclick="relabelBooking('${singleGroup.key}')">Relabel</button>
+            <button class="secondary" onclick="toggleBookingOperatorBreakdown('${singleGroup.key}')" id="opBreakdownToggleBtn">By Operator</button>
             ${reopenBtn}
           </span>
+        `;
+      }
+    }
+
+    const opBreakdownBar = document.getElementById('logOperatorBreakdown');
+    if (opBreakdownBar) {
+      const singleGroup = (currentLogTabFilter !== '__all__' && currentLogTabFilter !== '__unassigned__') ? visibleGroups[0] : null;
+      if (!singleGroup || bookingOperatorBreakdownOpenFor !== singleGroup.key) {
+        opBreakdownBar.style.display = 'none';
+      } else {
+        // Reuses computeOperatorStats exactly as-is, just scoped to this
+        // one booking's own entries instead of the whole day — same
+        // Active/Downtime/Downtime% shape already used in Generate Summary,
+        // so the numbers here always mean the same thing they do there.
+        const allBookingEntries = entries.filter(e => e.bookingId === singleGroup.key)
+          .sort((a, b) => (entrySortValue(a) - entrySortValue(b)) || (a.seq - b.seq));
+        const stats = computeOperatorStats(allBookingEntries);
+        opBreakdownBar.style.display = 'block';
+        opBreakdownBar.innerHTML = stats.length === 0 ? '<div class="schedule-empty">No task or downtime activity logged yet.</div>' : `
+          <table class="op-breakdown-table">
+            <thead><tr><th>Operator</th><th>Active</th><th>Downtime</th><th>Downtime %</th></tr></thead>
+            <tbody>${stats.map(s => `<tr><td>${escapeHtml(s.operator)}</td><td>${s.active}</td><td>${s.downtime}</td><td>${s.downtimePct}%</td></tr>`).join('')}</tbody>
+          </table>
         `;
       }
     }

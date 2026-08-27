@@ -859,9 +859,9 @@
   }
   .log-reopen-bar {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    justify-content: space-between;
-    gap: 12px;
+    gap: 10px;
     margin: 0 16px 14px;
     padding: 10px 14px;
     background: rgba(168,114,30,0.12);
@@ -979,6 +979,33 @@
   .schedule-overlay-box {
     max-width: 420px;
     width: 90vw;
+  }
+  .log-operator-breakdown {
+    margin: 0 16px 14px;
+    padding: 10px 14px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+  }
+  .op-breakdown-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  .op-breakdown-table th {
+    text-align: left;
+    color: var(--muted);
+    font-family: var(--font-display);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    padding: 4px 8px 6px 0;
+  }
+  .op-breakdown-table td {
+    padding: 5px 8px 5px 0;
+    font-family: var(--font-data);
+    color: var(--text);
   }
   .log-reopen-bar-actions {
     display: flex;
