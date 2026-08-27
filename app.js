@@ -1131,10 +1131,64 @@ let entries = [];
 
   let currentLogTabFilter = '__all__';
   let bookingOperatorBreakdownOpenFor = null;
+  let addEntryFormOpenFor = null;
 
   function toggleBookingOperatorBreakdown(bookingId) {
     bookingOperatorBreakdownOpenFor = (bookingOperatorBreakdownOpenFor === bookingId) ? null : bookingId;
     renderLog();
+  }
+
+  function toggleAddEntryForm(bookingId) {
+    addEntryFormOpenFor = (addEntryFormOpenFor === bookingId) ? null : bookingId;
+    renderLog();
+  }
+
+  // Adds a brand-new entry to a specific booking — works whether that
+  // booking is currently open or already closed, unlike normal logging
+  // (Start Run, Start Downtime, etc.) which only works on your own
+  // currently-attached booking. This is specifically for backfilling
+  // something that was never logged live, or that needs a corrected time.
+  function saveNewEntry(bookingId) {
+    const type = document.getElementById('addEntryType').value;
+    const operator = document.getElementById('addEntryOperator').value;
+    const timeVal = document.getElementById('addEntryTime').value;
+    const note = document.getElementById('addEntryNote').value.trim();
+    if (!timeVal) { showStatus('⚠ Pick a time for the new entry'); return; }
+    if (!note) { showStatus('⚠ Enter a note for the new entry'); return; }
+
+    const bookingEntries = entries.filter(e => e.bookingId === bookingId);
+    const entryDate = bookingEntries.length > 0 ? bookingEntries[0].date : todayDateString();
+    const newEntry = {
+      id: `local_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      seq: nextSeq++,
+      date: entryDate,
+      timestamp: inputTimeToAppTime(timeVal),
+      type: type,
+      note: note,
+      operator: operator,
+      category: null,
+      durationSeconds: null,
+      bookingId: bookingId
+    };
+    entries.push(newEntry);
+    renderLog();
+    updateTotals();
+    showStatus(`Added manually at ${newEntry.timestamp}`);
+
+    if (supabaseClient) {
+      supabaseClient.from('entries').insert(entryToRow(newEntry)).select().single()
+        .then(({ data, error }) => {
+          if (error) {
+            console.warn('New entry sync failed:', error);
+            setSyncStatus('offline — new entry not yet synced', 'status-error');
+          } else if (data) {
+            newEntry.id = data.id;
+            renderLog();
+          }
+        });
+    }
+
+    document.getElementById('addEntryNote').value = '';
   }
 
   // A small palette that stays consistent with the app's existing accent
@@ -1271,6 +1325,7 @@ let entries = [];
           <span class="log-reopen-bar-actions">
             <button class="secondary" onclick="relabelBooking('${singleGroup.key}')">Relabel</button>
             <button class="secondary" onclick="toggleBookingOperatorBreakdown('${singleGroup.key}')" id="opBreakdownToggleBtn">By Operator</button>
+            <button class="secondary" onclick="toggleAddEntryForm('${singleGroup.key}')">+ Add Entry</button>
             ${reopenBtn}
           </span>
         `;
@@ -1300,6 +1355,31 @@ let entries = [];
       }
     }
 
+    const addEntryBar = document.getElementById('logAddEntryForm');
+    if (addEntryBar) {
+      const singleGroup = (currentLogTabFilter !== '__all__' && currentLogTabFilter !== '__unassigned__') ? visibleGroups[0] : null;
+      if (!singleGroup || addEntryFormOpenFor !== singleGroup.key) {
+        addEntryBar.style.display = 'none';
+      } else {
+        addEntryBar.style.display = 'block';
+        addEntryBar.innerHTML = `
+          <div class="add-entry-form">
+            <select id="addEntryType">
+              <option value="Active">Task (Active)</option>
+              <option value="Downtime">Downtime</option>
+              <option value="Session">Session</option>
+              <option value="Lunch">Lunch</option>
+              <option value="DeadTime">Dead Time</option>
+            </select>
+            <select id="addEntryOperator">${Array.from(document.getElementById('operatorSelect').options).map(o => o.value).filter(v => v !== 'Other').map(n => `<option value="${escapeAttr(n)}" ${n === currentOperator ? 'selected' : ''}>${escapeHtml(n)}</option>`).join('')}</select>
+            <input type="time" step="1" id="addEntryTime" value="${appTimeToInputTime(new Date().toLocaleTimeString(undefined, { hour12: true }))}" />
+            <input type="text" id="addEntryNote" placeholder="Note, e.g. Task 4 started" />
+            <button onclick="saveNewEntry('${singleGroup.key}')">+ Add</button>
+          </div>
+        `;
+      }
+    }
+
     body.innerHTML = visibleGroups.map(g => `
       ${currentLogTabFilter === '__all__' ? `
       <tr class="log-group-header">
@@ -1311,7 +1391,7 @@ let entries = [];
       ${g.groupEntries.map(e => `
       <tr data-id="${e.id}">
         <td>${formatDateShort(e.date)}</td>
-        <td>${e.timestamp}</td>
+        <td class="time-cell">${e.timestamp}</td>
         <td><span class="tag ${e.type === 'Active' ? 'tag-active' : e.type === 'Session' ? 'tag-session' : e.type === 'Lunch' ? 'tag-lunch' : e.type === 'DeadTime' ? 'tag-deadtime' : 'tag-downtime'}">${e.type === 'DeadTime' ? 'Dead Time' : e.type}</span></td>
         <td>${e.operator ? escapeHtml(e.operator) : '<span style="color:var(--muted)">—</span>'}</td>
         <td class="note-cell">${e.note ? escapeHtml(e.note) : '<span style="color:var(--muted)">—</span>'}</td>
@@ -1335,6 +1415,8 @@ let entries = [];
     const entry = entries.find(x => x.id === id);
     if (!entry) return;
     const row = document.querySelector(`tr[data-id="${id}"]`);
+    const timeCell = row.querySelector('.time-cell') || row.children[1];
+    timeCell.innerHTML = `<input type="time" step="1" class="edit-time-input" value="${appTimeToInputTime(entry.timestamp)}" />`;
     const noteCell = row.querySelector('.note-cell');
     noteCell.innerHTML = `
       <input type="text" class="edit-input" value="${escapeAttr(entry.note || '')}" />
@@ -1353,12 +1435,18 @@ let entries = [];
     resetIdleTimer();
     const row = document.querySelector(`tr[data-id="${id}"]`);
     const input = row.querySelector('.edit-input');
+    const timeInput = row.querySelector('.edit-time-input');
     const entry = entries.find(x => x.id === id);
     if (entry) {
       entry.note = input.value.trim();
-      showStatus(`Note updated for ${entry.timestamp}`);
+      const updates = { note: entry.note };
+      if (timeInput && timeInput.value) {
+        entry.timestamp = inputTimeToAppTime(timeInput.value);
+        updates.entry_time = entry.timestamp;
+      }
+      showStatus(`Entry updated for ${entry.timestamp}`);
       if (supabaseClient && !String(id).startsWith('local_')) {
-        supabaseClient.from('entries').update({ note: entry.note }).eq('id', id)
+        supabaseClient.from('entries').update(updates).eq('id', id)
           .then(({ error }) => {
             if (error) {
               console.warn('Edit sync failed:', error);
@@ -1737,6 +1825,23 @@ let entries = [];
       }
     }
     return timeSec; // legacy entries without a date fall back to time-only ordering
+  }
+
+  // Converts between the app's stored "2:30:45 PM" format and the native
+  // <input type="time" step="1"> format ("14:30:45"), so timestamps can be
+  // edited with a real time picker instead of typing free text that has
+  // to exactly match the app's own format.
+  function appTimeToInputTime(appTimestamp) {
+    const d = parseTimestampToDate(appTimestamp);
+    if (!d) return '00:00:00';
+    return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  }
+  function inputTimeToAppTime(inputValue) {
+    const parts = inputValue.split(':').map(Number);
+    const h24 = parts[0], m = parts[1], s = parts[2] || 0;
+    const ampm = h24 >= 12 ? 'PM' : 'AM';
+    let h12 = h24 % 12; if (h12 === 0) h12 = 12;
+    return `${h12}:${pad(m)}:${pad(s)} ${ampm}`;
   }
 
   function escapeAttr(str) {
@@ -2911,7 +3016,7 @@ let entries = [];
     } else {
       targetRow.style.display = 'none';
       const progress = computeHbTaskProgress(taskNum, existingTarget);
-      showStatus(`Task #${taskNum}: ${progress.accumulatedHours.toFixed(1)} of ${existingTarget}h collected so far`);
+      showStatus(`Task #${taskNum}: ${formatDuration(progress.accumulatedSeconds)} of ${existingTarget}h collected so far`);
     }
   }
 
@@ -3026,11 +3131,27 @@ let entries = [];
       const afterDash = (e.note || '').split('—')[1];
       if (afterDash && pattern.test(afterDash.trim())) bookingIds.add(e.bookingId);
     });
-    const relevantEntries = entries.filter(e => bookingIds.has(e.bookingId));
-    const totals = computeTotalsForEntries(relevantEntries.slice().sort((a, b) => (entrySortValue(a) - entrySortValue(b)) || (a.seq - b.seq)));
+
+    // Tracks the booking's own span minus downtime — not Run Time button
+    // usage specifically. A team may not click Start Run for every moment
+    // of real work, but a booking's start-to-end already reflects when the
+    // robot was actually in use for this task, so that's the number that
+    // should count toward the schedule. Reuses computeBookingActiveSpanSeconds
+    // (built for combining Leave/Reopen cycles in the summary report) so a
+    // booking that was ended and reopened later doesn't count the gap
+    // in between as if it were collection time.
+    let totalSeconds = 0;
+    bookingIds.forEach(bid => {
+      const bookingEntries = entries.filter(e => e.bookingId === bid)
+        .sort((a, b) => (entrySortValue(a) - entrySortValue(b)) || (a.seq - b.seq));
+      const span = computeBookingActiveSpanSeconds(bookingEntries);
+      const downtime = computeCategorySecondsInSegment(bookingEntries, 'downtime');
+      totalSeconds += Math.max(0, span - downtime);
+    });
+
     return {
-      accumulatedSeconds: totals.totalSeconds,
-      accumulatedHours: totals.totalSeconds / 3600,
+      accumulatedSeconds: totalSeconds,
+      accumulatedHours: totalSeconds / 3600,
       targetHours: item.targetHours
     };
   }
@@ -3279,7 +3400,7 @@ let entries = [];
         idText = ` (Task #${b.hbTaskNumber})`;
         const progress = computeHbTaskProgress(parseInt(b.hbTaskNumber, 10));
         if (progress.targetHours > 0) {
-          progressText = ` — ${progress.accumulatedHours.toFixed(1)} of ${progress.targetHours}h`;
+          progressText = ` — ${formatDuration(progress.accumulatedSeconds)} of ${progress.targetHours}h`;
         }
       }
       const isMine = b.bookingId === myBookingId;
@@ -3318,7 +3439,7 @@ let entries = [];
               <button class="schedule-remove-btn" onclick="removeScheduleItem('${item.id}')">✕</button>
             </div>
             <div class="schedule-progress-bar"><div class="schedule-progress-fill ${met ? 'met' : ''}" style="width:${pct}%;"></div></div>
-            <div class="schedule-item-numbers">${progress.accumulatedHours.toFixed(1)}h of ${item.targetHours}h ${met ? '\u2713 met' : `(${pct}%)`}</div>
+            <div class="schedule-item-numbers">${formatDuration(progress.accumulatedSeconds)} of ${item.targetHours}h ${met ? '\u2713 met' : `(${pct}%)`}</div>
           </div>
         `;
       }).join('');
@@ -3563,7 +3684,7 @@ let entries = [];
         let progressText = '';
         if (currentHbTaskNumber) {
           const progress = computeHbTaskProgress(currentHbTaskNumber);
-          progressText = ` — ${progress.accumulatedHours.toFixed(1)} of ${progress.targetHours}h collected`;
+          progressText = ` — ${formatDuration(progress.accumulatedSeconds)} of ${progress.targetHours}h collected`;
         }
         status.textContent = `You're on: ${mainSessionType}${idText}${progressText}`;
         status.classList.add('active');
