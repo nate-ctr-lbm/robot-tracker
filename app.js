@@ -3074,10 +3074,15 @@ let entries = [];
     const type = typeSelect.value;
     if (!type) { showStatus('⚠ Pick a type for the schedule item'); return; }
 
-    const needsNumber = (type !== 'Sim Data Collect' && type !== 'Lunch');
+    // Policy Training's number is optional everywhere else in the app real
+    // bookings can start without one — the schedule shouldn't be stricter
+    // than the thing it's tracking. UC/Targeted/Household Bridge genuinely
+    // require one, since that number is what identifies which one it is.
+    const requiresNumber = (type === 'UC Data Collect' || type === 'Targeted Data Collect' || type === 'Household Bridge Data Collection');
+    const allowsNumber = requiresNumber || type === 'Policy Training';
     const numberKind = (type === 'Policy Training') ? 'Policy' : (type === 'Household Bridge Data Collection') ? 'Task' : 'UC';
     const num = parseInt(numberInput.value, 10);
-    if (needsNumber && (!num || num < 1)) {
+    if (requiresNumber && (!num || num < 1)) {
       showStatus(`⚠ Enter a number for ${type} before adding it to the schedule`);
       numberInput.focus();
       return;
@@ -3089,7 +3094,8 @@ let entries = [];
       return;
     }
 
-    const numSuffix = needsNumber ? ` (${numberKind} #${num})` : '';
+    const hasNumber = allowsNumber && num > 0;
+    const numSuffix = hasNumber ? ` (${numberKind} #${num})` : '';
     const note = `Scheduled — ${type}${numSuffix} — Target: ${target}h`;
     logEntry('ScheduleTarget', note, null, null, null);
     numberInput.value = '';
@@ -3123,7 +3129,22 @@ let entries = [];
   // active time across every matching booking" approach already proven
   // correct for Household Bridge, generalized here to any type.
   function computeScheduleItemProgress(item) {
-    const numberPattern = item.number ? `\\s*\\(${item.numberKind} #${item.number}\\)` : '';
+    // When the schedule item has a specific number, only that exact number
+    // counts (UC #2's target shouldn't absorb UC #5's work). When it has no
+    // number at all (a generic "Policy Training" target, say), it should
+    // match ANY booking of that type today, whether or not that particular
+    // booking happened to have its own number attached — otherwise a
+    // numberless schedule item would only match a booking whose note is
+    // an exact, suffix-less string, missing real work that had a number.
+    // numberKind is derived from the type here rather than trusted from
+    // item.numberKind, since that field is null whenever no number was
+    // given when the item was created (nothing to parse it from) — using
+    // it directly in the fallback pattern would literally search for the
+    // word "null" instead of "Policy".
+    const derivedNumberKind = item.numberKind || (item.type === 'Policy Training' ? 'Policy' : (item.type === 'Household Bridge Data Collection' ? 'Task' : 'UC'));
+    const numberPattern = item.number
+      ? `\\s*\\(${derivedNumberKind} #${item.number}\\)`
+      : `(?:\\s*\\(${derivedNumberKind} #\\d+\\))?`;
     const pattern = new RegExp(`^${item.type.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}${numberPattern}\\s*$`, 'i');
     const bookingIds = new Set();
     entries.forEach(e => {
