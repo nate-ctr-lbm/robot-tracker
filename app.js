@@ -2038,11 +2038,8 @@ let entries = [];
     });
 
     const bookingIds = Object.keys(byBooking);
-    const segments = bookingIds
-      .map(id => byBooking[id].sort((a, b) => (entrySortValue(a) - entrySortValue(b)) || (a.seq - b.seq)))
-      .sort((a, b) => entrySortValue(a[0]) - entrySortValue(b[0]));
-
-    return segments.filter(s => s.length > 0).map((seg, i) => {
+    const perBooking = bookingIds.map(id => {
+      const seg = byBooking[id].sort((a, b) => (entrySortValue(a) - entrySortValue(b)) || (a.seq - b.seq));
       const startTs = seg[0].timestamp;
       const lastTs = seg[seg.length - 1].timestamp;
       const info = getBookingLifecycleInfo(seg);
@@ -2058,22 +2055,60 @@ let entries = [];
       let withoutDowntime = withDowntime - downtimeSecs;
       if (withoutDowntime < 0) withoutDowntime = 0;
 
+      const idSuffix = info.ucNumber ? ` (UC #${info.ucNumber})` : info.policyNumber ? ` (Policy #${info.policyNumber})` : info.hbTaskNumber ? ` (Task #${info.hbTaskNumber})` : '';
       const operators = [...new Set(seg.map(e => e.operator).filter(Boolean))];
       return {
-        number: i + 1,
-        operators: operators.join(', ') || '—',
+        name: `${info.type}${idSuffix}`,
+        operators,
+        startSortVal: entrySortValue(seg[0]),
+        endSortVal: entrySortValue(seg[seg.length - 1]),
         start: startTs,
         end: isOngoing ? 'ongoing' : lastTs,
+        isOngoing,
+        durationWithDowntimeSeconds: withDowntime,
+        durationWithoutDowntimeSeconds: withoutDowntime,
+        downtimeSeconds: downtimeSecs,
+        gaps: computeUnaccountedGaps(seg)
+      };
+    });
+
+    // Two separate bookings can share the same name — the same UC # started
+    // twice on the same day by different people, say. Those should read as
+    // one combined line in the report, not two disconnected "sessions".
+    const byName = {};
+    perBooking.forEach(b => {
+      if (!byName[b.name]) byName[b.name] = [];
+      byName[b.name].push(b);
+    });
+
+    const combined = Object.keys(byName).map(name => {
+      const group = byName[name];
+      const withDowntime = group.reduce((sum, b) => sum + b.durationWithDowntimeSeconds, 0);
+      const withoutDowntime = group.reduce((sum, b) => sum + b.durationWithoutDowntimeSeconds, 0);
+      const downtimeSecs = group.reduce((sum, b) => sum + b.downtimeSeconds, 0);
+      const operators = [...new Set(group.flatMap(b => b.operators))];
+      const earliest = group.reduce((a, b) => a.startSortVal <= b.startSortVal ? a : b);
+      const latest = group.reduce((a, b) => a.endSortVal >= b.endSortVal ? a : b);
+      const anyOngoing = group.some(b => b.isOngoing);
+      const gaps = group.flatMap(b => b.gaps);
+      return {
+        name,
+        sortVal: earliest.startSortVal,
+        operators: operators.join(', ') || '—',
+        start: earliest.start,
+        end: anyOngoing ? 'ongoing' : latest.end,
         durationWithDowntimeSeconds: withDowntime,
         durationWithoutDowntimeSeconds: withoutDowntime,
         downtimeSeconds: downtimeSecs,
         durationWithDowntime: formatDuration(withDowntime),
         durationWithoutDowntime: formatDuration(withoutDowntime),
         downtimeDuration: formatDuration(downtimeSecs),
-        gaps: (function() { return computeUnaccountedGaps(seg); })(),
+        gaps,
         get unaccountedSeconds() { return this.gaps.reduce((sum, g) => sum + g.seconds, 0); }
       };
     });
+
+    return combined.sort((a, b) => a.sortVal - b.sortVal);
   }
 
   function computeDowntimeByCategory(sortedEntries) {
@@ -2263,17 +2298,17 @@ let entries = [];
     <div class="stat-box"><div class="stat-value">${totalUnaccounted}</div><div class="stat-label">Unaccounted Time</div></div>
   </div>
 
-  <h2>Session Breakdown</h2>
+  <h2>Booking Breakdown</h2>
   <table>
-    <tr><th>Session</th><th>Operator(s)</th><th>Start</th><th>End</th><th>Time (incl. downtime)</th><th>Time (excl. downtime)</th><th>Downtime</th><th>Unaccounted</th></tr>
-    ${sessionSummaries.map(s => `<tr><td>Session ${s.number}</td><td>${escapeHtmlText(s.operators)}</td><td>${s.start}</td><td>${s.end}</td><td>${s.durationWithDowntime}</td><td>${s.durationWithoutDowntime}</td><td>${s.downtimeDuration}</td><td>${formatDuration(s.unaccountedSeconds)}</td></tr>`).join('')}
+    <tr><th>Booking</th><th>Operator(s)</th><th>Start</th><th>End</th><th>Time (incl. downtime)</th><th>Time (excl. downtime)</th><th>Downtime</th><th>Unaccounted</th></tr>
+    ${sessionSummaries.map(s => `<tr><td>${escapeHtmlText(s.name)}</td><td>${escapeHtmlText(s.operators)}</td><td>${s.start}</td><td>${s.end}</td><td>${s.durationWithDowntime}</td><td>${s.durationWithoutDowntime}</td><td>${s.downtimeDuration}</td><td>${formatDuration(s.unaccountedSeconds)}</td></tr>`).join('')}
   </table>
 
   ${sessionSummaries.some(s => s.gaps.length > 0) ? `<h2>Unaccounted Time Gaps</h2>
   <p style="color:#6b7280;font-size:13px;">Time between logged events that wasn't recorded as active work, downtime, or lunch.</p>
   <table>
-    <tr><th>Session</th><th>From</th><th>To</th><th>Duration</th></tr>
-    ${sessionSummaries.flatMap(s => s.gaps.map(g => `<tr><td>Session ${s.number}</td><td>${g.startLabel}</td><td>${g.endLabel}</td><td>${formatDuration(g.seconds)}</td></tr>`)).join('')}
+    <tr><th>Booking</th><th>From</th><th>To</th><th>Duration</th></tr>
+    ${sessionSummaries.flatMap(s => s.gaps.map(g => `<tr><td>${escapeHtmlText(s.name)}</td><td>${g.startLabel}</td><td>${g.endLabel}</td><td>${formatDuration(g.seconds)}</td></tr>`)).join('')}
   </table>` : ''}
 
   <h2>Downtime Log</h2>
