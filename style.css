@@ -980,6 +980,46 @@
     max-width: 420px;
     width: 90vw;
   }
+  .log-add-entry-form {
+    margin: 0 16px 14px;
+    padding: 10px 14px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+  }
+  .add-entry-form {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .add-entry-form select,
+  .add-entry-form input {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    color: var(--text);
+    padding: 8px;
+    font-size: 13px;
+  }
+  .add-entry-form select {
+    flex: 1 1 45%;
+  }
+  .add-entry-form input[type="time"] {
+    flex: 1 1 45%;
+  }
+  .add-entry-form input[type="text"] {
+    flex: 1 1 100%;
+  }
+  .add-entry-form button {
+    flex: 1 1 100%;
+    background: var(--accent);
+    color: #05221c;
+    border: none;
+    border-radius: 3px;
+    padding: 8px 12px;
+    font-weight: 700;
+    cursor: pointer;
+  }
   .log-operator-breakdown {
     margin: 0 16px 14px;
     padding: 10px 14px;
@@ -1009,6 +1049,7 @@
   }
   .log-reopen-bar-actions {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 8px;
   }
@@ -1129,6 +1170,16 @@
     background: var(--bg);
     color: var(--text);
     font-size: 14px;
+  }
+  .edit-time-input {
+    padding: 6px 8px;
+    border-radius: 3px;
+    border: 1px solid var(--accent);
+    background: var(--bg);
+    color: var(--text);
+    font-size: 13px;
+    font-family: var(--font-data);
+    width: 100%;
   }
   input[type="text"] {
     width: 100%;

@@ -1074,16 +1074,17 @@ let entries = [];
     saveToStorage();
   }
 
-  function logEntry(type, note, durationSeconds, category, bookingIdOverride) {
+  function logEntry(type, note, durationSeconds, category, bookingIdOverride, overrides) {
     const now = new Date();
+    overrides = overrides || {};
     const entry = {
       id: `local_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       seq: nextSeq++,
-      date: now.toLocaleDateString('en-CA'), // YYYY-MM-DD, unambiguous and sortable
-      timestamp: now.toLocaleTimeString(undefined, { hour12: true }),
+      date: overrides.date || now.toLocaleDateString('en-CA'), // YYYY-MM-DD, unambiguous and sortable
+      timestamp: overrides.timestamp || now.toLocaleTimeString(undefined, { hour12: true }),
       type: type,
       note: note || '',
-      operator: currentOperator || '',
+      operator: overrides.operator || currentOperator || '',
       category: category || null,
       durationSeconds: (typeof durationSeconds === 'number') ? durationSeconds : null,
       bookingId: (bookingIdOverride !== undefined) ? bookingIdOverride : myBookingId
