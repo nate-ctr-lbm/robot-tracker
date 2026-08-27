@@ -3660,17 +3660,22 @@ let entries = [];
   function leaveBooking() {
     resetIdleTimer();
     if (!myBookingId) return;
+    // Unlike ending a booking, leaving is meant to be a quick, low-friction
+    // way to step away — auto-close whatever's running rather than forcing
+    // it to be stopped manually first. Nothing gets lost: each gets logged
+    // as a normal completed/ended entry, just tagged as auto-closed.
     if (taskInProgress) {
-      showStatus('⚠ Stop the Run Time before leaving the booking');
-      return;
+      const durationSeconds = taskStartTimestamp ? Math.round((new Date() - taskStartTimestamp) / 1000) : 0;
+      logEntry('Active', `Task ${currentTaskNumber} completed (${formatDuration(durationSeconds)}) — auto-closed: left booking`, durationSeconds);
+      taskInProgress = false;
+      taskStartTimestamp = null;
+      updateTaskButton();
     }
     if (downtimeInProgress) {
-      showStatus('⚠ End Downtime before leaving the booking');
-      return;
+      autoCloseDowntime('left booking');
     }
     if (lunchInProgress) {
-      showStatus('⚠ End Lunch before leaving the booking');
-      return;
+      autoCloseLunch('left booking');
     }
     const idSuffix = currentUcNumber ? ` (UC #${currentUcNumber})` : currentPolicyNumber ? ` (Policy #${currentPolicyNumber})` : currentHbTaskNumber ? ` (Task #${currentHbTaskNumber})` : '';
     logEntry('Session', `Left booking — ${mainSessionType}${idSuffix}`, null, null, myBookingId);
