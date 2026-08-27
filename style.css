@@ -870,6 +870,116 @@
     font-size: 13px;
     color: var(--text);
   }
+  .schedule-card {
+    border-color: rgba(168,114,30,0.35);
+  }
+  .schedule-card-toggle {
+    float: right;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--muted);
+    text-transform: none;
+    letter-spacing: normal;
+    cursor: pointer;
+  }
+  .schedule-card-toggle:hover {
+    color: var(--text);
+  }
+  .schedule-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-bottom: 12px;
+  }
+  .schedule-empty {
+    color: var(--muted);
+    font-size: 13px;
+    padding: 8px 0;
+  }
+  .schedule-item {
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 10px 12px;
+  }
+  .schedule-item-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 6px;
+  }
+  .schedule-item-label {
+    font-family: var(--font-display);
+    font-weight: 600;
+    font-size: 13px;
+    color: var(--text);
+  }
+  .schedule-remove-btn {
+    background: none;
+    border: none;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 13px;
+    padding: 0 4px;
+  }
+  .schedule-remove-btn:hover {
+    color: var(--accent2);
+  }
+  .schedule-progress-bar {
+    height: 6px;
+    border-radius: 2px;
+    background: var(--bg);
+    overflow: hidden;
+    margin-bottom: 4px;
+  }
+  .schedule-progress-fill {
+    height: 100%;
+    background: var(--accent);
+  }
+  .schedule-progress-fill.met {
+    background: var(--lunch-signal);
+  }
+  .schedule-item-numbers {
+    font-family: var(--font-data);
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .schedule-add-form {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .schedule-add-form select {
+    flex: 1 1 100%;
+  }
+  .schedule-add-form input {
+    flex: 1 1 70px;
+    min-width: 0;
+  }
+  .schedule-add-form select,
+  .schedule-add-form input {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    color: var(--text);
+    padding: 8px;
+    font-size: 13px;
+  }
+  .schedule-add-form button {
+    flex: 1 1 100%;
+    background: var(--accent);
+    color: #05221c;
+    border: none;
+    border-radius: 3px;
+    padding: 8px 12px;
+    font-weight: 700;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .schedule-overlay-box {
+    max-width: 420px;
+    width: 90vw;
+  }
   .log-reopen-bar-actions {
     display: flex;
     align-items: center;

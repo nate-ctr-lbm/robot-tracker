@@ -633,6 +633,7 @@ let entries = [];
     updateSessionDuration(sorted);
     setBoth('totalTasksDisplay', tasksCompleted);
     updateCurrentStatusPill();
+    renderScheduleList();
     saveToStorage();
   }
 
@@ -1762,8 +1763,17 @@ let entries = [];
         openOperator = e.operator || '';
         openStartNote = note;
       } else if (new RegExp(regexWord + '\\s+(ended|completed)', 'i').test(note)) {
-        const dm = note.match(/\((\d+)m\s+(\d+)s\)/);
-        const duration = dm ? `${dm[1]}m ${dm[2]}s` : '?';
+        // Prefer the entry's own numeric durationSeconds — reliable
+        // regardless of length. The regex fallback below only matches
+        // "Xm Ys" and silently mis-parses anything an hour or longer
+        // (e.g. "1h 5m 2s"), which is why durationSeconds is checked first.
+        let duration;
+        if (typeof e.durationSeconds === 'number') {
+          duration = formatDuration(e.durationSeconds);
+        } else {
+          const dm = note.match(/\((?:(\d+)h\s+)?(\d+)m\s+(\d+)s\)/);
+          duration = dm ? formatDuration((parseInt(dm[1] || '0', 10) * 3600) + (parseInt(dm[2], 10) * 60) + parseInt(dm[3], 10)) : '?';
+        }
         const reason = extractReason(note) || extractReason(openStartNote || '');
         events.push({ operator: e.operator || openOperator || '', duration, reason: reason || 'No reason logged' });
         openStart = null; openOperator = null; openStartNote = null;
@@ -2827,11 +2837,14 @@ let entries = [];
     const select = document.getElementById('mainSessionTypeSelect');
     const otherInput = document.getElementById('mainSessionOtherInput');
     const ucRow = document.getElementById('ucNumberRow');
+    const ucHint = document.getElementById('ucNumberHint');
     const policyRow = document.getElementById('policyNumberRow');
     const hbTaskRow = document.getElementById('hbTaskNumberRow');
     const hbTargetRow = document.getElementById('hbTargetHoursRow');
+    const needsUcNumber = (select.value === 'UC Data Collect' || select.value === 'Targeted Data Collect');
     otherInput.style.display = (select.value === 'Other') ? 'block' : 'none';
-    ucRow.style.display = (select.value === 'UC Data Collect') ? 'flex' : 'none';
+    ucRow.style.display = needsUcNumber ? 'flex' : 'none';
+    if (ucHint) ucHint.textContent = `(required for ${select.value})`;
     policyRow.style.display = (select.value === 'Policy Training') ? 'flex' : 'none';
     hbTaskRow.style.display = (select.value === 'Household Bridge Data Collection') ? 'flex' : 'none';
     hbTargetRow.style.display = 'none';
@@ -2894,8 +2907,103 @@ let entries = [];
     };
   }
 
-  let currentPolicyNumber = null;
-  let currentUcNumber = null;
+  // ---- Today's Schedule ----
+  // Lets someone plan the day's targets manually (type + number + target
+  // hours) each morning, editable anytime after. Stored as plain entries
+  // (type 'ScheduleTarget') so no new Supabase table or migration is
+  // needed — same approach as everything else in this app.
+  function getTodaysScheduleItems() {
+    return entries
+      .filter(e => e.type === 'ScheduleTarget' && e.date === todayDateString())
+      .sort((a, b) => (entrySortValue(a) - entrySortValue(b)) || (a.seq - b.seq));
+  }
+
+  function parseScheduleItem(e) {
+    const m = (e.note || '').match(/^Scheduled — (.+?)(?:\s*\((UC|Policy|Task) #(\d+)\))?\s*—\s*Target:\s*([\d.]+)h$/);
+    if (!m) return null;
+    return {
+      id: e.id,
+      type: m[1].trim(),
+      numberKind: m[2] || null,
+      number: m[3] || null,
+      targetHours: parseFloat(m[4])
+    };
+  }
+
+  function addScheduleItem(suffix) {
+    suffix = suffix || '';
+    const typeSelect = document.getElementById('scheduleTypeSelect' + suffix);
+    const numberInput = document.getElementById('scheduleNumberInput' + suffix);
+    const targetInput = document.getElementById('scheduleTargetInput' + suffix);
+    const type = typeSelect.value;
+    if (!type) { showStatus('⚠ Pick a type for the schedule item'); return; }
+
+    const needsNumber = (type !== 'Sim Data Collect' && type !== 'Lunch');
+    const numberKind = (type === 'Policy Training') ? 'Policy' : (type === 'Household Bridge Data Collection') ? 'Task' : 'UC';
+    const num = parseInt(numberInput.value, 10);
+    if (needsNumber && (!num || num < 1)) {
+      showStatus(`⚠ Enter a number for ${type} before adding it to the schedule`);
+      numberInput.focus();
+      return;
+    }
+    const target = parseFloat(targetInput.value);
+    if (!target || target <= 0) {
+      showStatus('⚠ Enter a target in hours before adding it to the schedule');
+      targetInput.focus();
+      return;
+    }
+
+    const numSuffix = needsNumber ? ` (${numberKind} #${num})` : '';
+    const note = `Scheduled — ${type}${numSuffix} — Target: ${target}h`;
+    logEntry('ScheduleTarget', note, null, null, null);
+    numberInput.value = '';
+    targetInput.value = '';
+    renderScheduleList();
+    showStatus(`Added ${type}${numSuffix} to today's schedule`);
+  }
+
+  function addScheduleItemCard() { addScheduleItem('Card'); }
+
+  function toggleScheduleCard() {
+    const body = document.getElementById('scheduleCardBody');
+    const toggle = document.getElementById('scheduleCardToggle');
+    const collapsed = body.style.display === 'none';
+    body.style.display = collapsed ? 'block' : 'none';
+    toggle.textContent = collapsed ? '▾ hide' : '▸ show';
+  }
+
+  function removeScheduleItem(entryId) {
+    entries = entries.filter(e => e.id !== entryId);
+    if (supabaseClient && !String(entryId).startsWith('local_')) {
+      supabaseClient.from('entries').delete().eq('id', entryId)
+        .then(({ error }) => { if (error) console.warn('Schedule item delete sync failed:', error); });
+    }
+    renderScheduleList();
+    showStatus('Removed from today\u2019s schedule');
+  }
+
+  // Sums actual collected time today for whatever bookings match this
+  // schedule item's type+number — same "match by type and number, sum
+  // active time across every matching booking" approach already proven
+  // correct for Household Bridge, generalized here to any type.
+  function computeScheduleItemProgress(item) {
+    const numberPattern = item.number ? `\\s*\\(${item.numberKind} #${item.number}\\)` : '';
+    const pattern = new RegExp(`^${item.type.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}${numberPattern}\\s*$`, 'i');
+    const bookingIds = new Set();
+    entries.forEach(e => {
+      if (e.type !== 'Session' || !e.bookingId || e.date !== todayDateString()) return;
+      if (!/new session started/i.test(e.note || '')) return;
+      const afterDash = (e.note || '').split('—')[1];
+      if (afterDash && pattern.test(afterDash.trim())) bookingIds.add(e.bookingId);
+    });
+    const relevantEntries = entries.filter(e => bookingIds.has(e.bookingId));
+    const totals = computeTotalsForEntries(relevantEntries.slice().sort((a, b) => (entrySortValue(a) - entrySortValue(b)) || (a.seq - b.seq)));
+    return {
+      accumulatedSeconds: totals.totalSeconds,
+      accumulatedHours: totals.totalSeconds / 3600,
+      targetHours: item.targetHours
+    };
+  }
 
   function updateWorkControlsGating() {
     // Run Time / Downtime only make sense once THIS device is attached to
@@ -3083,10 +3191,10 @@ let entries = [];
 
   function bookingIdentifier(type, ucNum, policyNum, hbTaskNum) {
     // The thing that makes a booking "the same" for join-vs-start purposes:
-    // for UC Data Collect it's the UC number; for Policy Training it's the
-    // Policy number; for Household Bridge it's the task number; anything
-    // else is identified by type alone.
-    if (type === 'UC Data Collect') return `UC Data Collect|${ucNum || ''}`;
+    // for UC Data Collect and Targeted Data Collect it's the UC number;
+    // for Policy Training it's the Policy number; for Household Bridge
+    // it's the task number; anything else is identified by type alone.
+    if (type === 'UC Data Collect' || type === 'Targeted Data Collect') return `${type}|${ucNum || ''}`;
     if (type === 'Policy Training') return `Policy Training|${policyNum || ''}`;
     if (type === 'Household Bridge Data Collection') return `Household Bridge Data Collection|${hbTaskNum || ''}`;
     return `${type}|`;
@@ -3158,6 +3266,37 @@ let entries = [];
   }
 
   let currentHbTaskNumber = null;
+
+  function renderScheduleList() {
+    const items = getTodaysScheduleItems().map(parseScheduleItem).filter(Boolean);
+    ['scheduleOverlayList', 'scheduleCardList'].forEach(containerId => {
+      const container = document.getElementById(containerId);
+      if (!container) return;
+      if (items.length === 0) {
+        container.innerHTML = '<div class="schedule-empty">Nothing on today\u2019s schedule yet.</div>';
+        return;
+      }
+      container.innerHTML = items.map(item => {
+        const progress = computeScheduleItemProgress(item);
+        const pct = progress.targetHours > 0 ? Math.min(100, Math.round((progress.accumulatedHours / progress.targetHours) * 100)) : 0;
+        const label = item.number ? `${item.type} (${item.numberKind} #${item.number})` : item.type;
+        const met = progress.accumulatedHours >= progress.targetHours;
+        return `
+          <div class="schedule-item">
+            <div class="schedule-item-top">
+              <span class="schedule-item-label">${escapeHtml(label)}</span>
+              <button class="schedule-remove-btn" onclick="removeScheduleItem('${item.id}')">✕</button>
+            </div>
+            <div class="schedule-progress-bar"><div class="schedule-progress-fill ${met ? 'met' : ''}" style="width:${pct}%;"></div></div>
+            <div class="schedule-item-numbers">${progress.accumulatedHours.toFixed(1)}h of ${item.targetHours}h ${met ? '\u2713 met' : `(${pct}%)`}</div>
+          </div>
+        `;
+      }).join('');
+    });
+  }
+
+  let currentPolicyNumber = null;
+  let currentUcNumber = null;
 
   function attachToBooking(bookingId, type, policyNumber, ucNumber, hbTaskNumber) {
     myBookingId = bookingId;
@@ -3256,8 +3395,8 @@ let entries = [];
 
     const ucVal = parseInt(ucInput.value, 10);
     const ucNumber = (ucVal > 0) ? ucVal : null;
-    if (chosenType === 'UC Data Collect' && !ucNumber) {
-      showStatus('⚠ Enter a UC # before starting a UC Data Collect booking');
+    if ((chosenType === 'UC Data Collect' || chosenType === 'Targeted Data Collect') && !ucNumber) {
+      showStatus(`⚠ Enter a UC # before starting a ${chosenType} booking`);
       ucInput.focus();
       return;
     }
@@ -3494,7 +3633,7 @@ let entries = [];
     otherInput.style.display = (select.value === 'Other') ? 'block' : 'none';
   }
 
-  function confirmOperatorPrompt() {
+  async function confirmOperatorPrompt() {
     const select = document.getElementById('operatorPromptSelect');
     const otherInput = document.getElementById('operatorPromptOtherInput');
     const chosen = (select.value === 'Other') ? otherInput.value.trim() : select.value;
@@ -3504,8 +3643,19 @@ let entries = [];
     }
     currentOperator = chosen;
     document.getElementById('operatorPromptOverlay').style.display = 'none';
+    document.getElementById('scheduleOverlay').style.display = 'flex';
+    // initApp() loads entries from Supabase and does all normal init —
+    // running it now (while mainWrap is still hidden behind this overlay)
+    // means it's already complete by the time "Continue" is pressed, and
+    // renderScheduleList() below shows real, up-to-date data instead of
+    // an empty list from before entries were ever loaded.
+    await initApp();
+    renderScheduleList();
+  }
+
+  function confirmScheduleOverlay() {
+    document.getElementById('scheduleOverlay').style.display = 'none';
     document.getElementById('mainWrap').style.display = 'block';
-    initApp();
   }
 
   document.getElementById('passcodeInput').addEventListener('keydown', (e) => {
