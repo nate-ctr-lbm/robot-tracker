@@ -1157,6 +1157,19 @@ let entries = [];
     if (!timeVal) { showStatus('⚠ Pick a time for the new entry'); return; }
     if (!note) { showStatus('⚠ Enter a note for the new entry'); return; }
 
+    // A Session-type note that looks like "New session started" or "Session
+    // reopened" but has no em-dash-separated type after it silently breaks
+    // every downstream feature that derives a booking's type from this exact
+    // text (tabs, Relabel, Reopen, exports, summaries all show "Unknown"
+    // from that point on) — whether the type is missing entirely or someone
+    // used a regular hyphen instead of the required em-dash. Catching it
+    // here, with a specific fix in the message, is far cheaper than someone
+    // discovering it days later as a mystery "Unknown" booking.
+    if (type === 'Session' && /(new session started|session reopened)/i.test(note) && !note.includes('—')) {
+      showStatus('⚠ Add — (em dash) then the type, e.g. "New session started — UC Data Collect (UC #2)" — otherwise this booking will show as "Unknown" everywhere');
+      return;
+    }
+
     const bookingEntries = entries.filter(e => e.bookingId === bookingId);
     const entryDate = bookingEntries.length > 0 ? bookingEntries[0].date : todayDateString();
     const newEntry = {
@@ -3262,7 +3275,13 @@ let entries = [];
       /^session reopened/i.test(e.note || '')
     ));
     const mostRecent = lifecycleEvents[lifecycleEvents.length - 1];
-    const isOngoing = !!startEntry && !!mostRecent && !/^session ended/i.test(mostRecent.note || '');
+    // Deliberately doesn't require startEntry to exist — if the original
+    // "New session started" entry was ever lost (deleted, or otherwise
+    // missing) but a "Session reopened" entry exists and is the most recent
+    // lifecycle event, the booking is genuinely open. Requiring startEntry
+    // here would make any booking that lost its first entry permanently
+    // unable to be considered open again, no matter what gets clicked.
+    const isOngoing = !!mostRecent && !/^session ended/i.test(mostRecent.note || '');
 
     let type = 'Unknown';
     let policyNumber = null;
@@ -3329,23 +3348,43 @@ let entries = [];
   // value. Updating this one entry is enough for the change to appear
   // everywhere the booking's label is shown.
   function relabelBooking(bookingId) {
-    const bookingEntries = entries.filter(e => e.bookingId === bookingId);
+    const bookingEntries = entries.filter(e => e.bookingId === bookingId)
+      .sort((a, b) => (entrySortValue(a) - entrySortValue(b)) || (a.seq - b.seq));
     if (bookingEntries.length === 0) {
       showStatus('⚠ Could not find that booking');
       return;
     }
-    const startEntry = bookingEntries.find(e => e.type === 'Session' && /new session started/i.test(e.note || ''));
-    if (!startEntry) {
-      showStatus('⚠ Could not find this booking\u2019s start entry to relabel');
-      return;
+    let startEntry = bookingEntries.find(e => e.type === 'Session' && /new session started/i.test(e.note || ''));
+    // The original start entry can end up missing — deleted, or never
+    // correctly created in the first place — leaving a booking permanently
+    // stuck as "Unknown" with nothing for Relabel to update. Rather than
+    // fail here, create a new one using the earliest entry that DOES exist
+    // for timing, so relabeling can still recover the booking.
+    const isNewStartEntry = !startEntry;
+    if (isNewStartEntry) {
+      const earliest = bookingEntries[0];
+      startEntry = {
+        id: `local_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        seq: nextSeq++,
+        date: earliest.date,
+        timestamp: earliest.timestamp,
+        type: 'Session',
+        note: '',
+        operator: earliest.operator || currentOperator || '',
+        category: null,
+        durationSeconds: null,
+        bookingId: bookingId
+      };
     }
     const info = getBookingLifecycleInfo(bookingEntries);
     const validTypes = ['Sim Data Collect', 'UC Data Collect', 'Policy Training', 'Lunch', 'Household Bridge Data Collection'];
     const currentIdSuffix = info.ucNumber ? ` (UC #${info.ucNumber})` : info.policyNumber ? ` (Policy #${info.policyNumber})` : info.hbTaskNumber ? ` (Task #${info.hbTaskNumber})` : '';
 
     const typed = prompt(
-      `Relabel this booking.\n\nCurrently: ${info.type}${currentIdSuffix}\n\nEnter the new type — one of:\n${validTypes.join(', ')}\n(or type something custom):`,
-      info.type
+      isNewStartEntry
+        ? `This booking is missing its original start entry, so it shows as "Unknown". Enter its actual type — one of:\n${validTypes.join(', ')}\n(or type something custom):`
+        : `Relabel this booking.\n\nCurrently: ${info.type}${currentIdSuffix}\n\nEnter the new type — one of:\n${validTypes.join(', ')}\n(or type something custom):`,
+      info.type === 'Unknown' ? '' : info.type
     );
     if (typed === null || !typed.trim()) return; // cancelled
     const newType = typed.trim();
@@ -3371,12 +3410,26 @@ let entries = [];
     const newNote = `New session started — ${newType}${idSuffix}`;
     startEntry.note = newNote;
 
+    if (isNewStartEntry) {
+      entries.push(startEntry);
+    }
+
     if (supabaseClient && !String(startEntry.id).startsWith('local_')) {
       supabaseClient.from('entries').update({ note: newNote }).eq('id', startEntry.id)
         .then(({ error }) => {
           if (error) {
             console.warn('Relabel sync failed:', error);
             setSyncStatus('offline — relabel not yet synced', 'status-error');
+          }
+        });
+    } else if (isNewStartEntry && supabaseClient) {
+      supabaseClient.from('entries').insert(entryToRow(startEntry)).select().single()
+        .then(({ data, error }) => {
+          if (error) {
+            console.warn('New start entry sync failed:', error);
+            setSyncStatus('offline — relabel not yet synced', 'status-error');
+          } else if (data) {
+            startEntry.id = data.id;
           }
         });
     }
@@ -3422,9 +3475,14 @@ let entries = [];
     Object.keys(byId).forEach(bookingId => {
       const evs = byId[bookingId].sort((a, b) => (entrySortValue(a) - entrySortValue(b)) || (a.seq - b.seq));
       const info = getBookingLifecycleInfo(evs);
-      if (!info.startEntry || !info.isOngoing) return;
+      if (!info.isOngoing) return;
 
       const operators = [...new Set(evs.map(e => e.operator).filter(Boolean))];
+      // Falls back to the segment's own earliest entry when there's no real
+      // start entry to read from — same situation getBookingLifecycleInfo
+      // already handles for isOngoing, just needed here too now that a
+      // booking without one can still correctly reach this point.
+      const earliestEntry = info.startEntry || evs[0];
 
       active.push({
         bookingId,
@@ -3433,8 +3491,8 @@ let entries = [];
         ucNumber: info.ucNumber,
         hbTaskNumber: info.hbTaskNumber,
         operators: operators.join(', ') || '—',
-        startDate: info.startEntry.date,
-        startTime: info.startEntry.timestamp
+        startDate: earliestEntry.date,
+        startTime: earliestEntry.timestamp
       });
     });
     return active;
