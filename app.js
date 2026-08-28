@@ -1133,6 +1133,7 @@ let entries = [];
   let currentLogTabFilter = '__all__';
   let bookingOperatorBreakdownOpenFor = null;
   let addEntryFormOpenFor = null;
+  let relabelFormOpenFor = null;
 
   function toggleBookingOperatorBreakdown(bookingId) {
     bookingOperatorBreakdownOpenFor = (bookingOperatorBreakdownOpenFor === bookingId) ? null : bookingId;
@@ -1389,6 +1390,36 @@ let entries = [];
             <input type="time" step="1" id="addEntryTime" value="${appTimeToInputTime(new Date().toLocaleTimeString(undefined, { hour12: true }))}" />
             <input type="text" id="addEntryNote" placeholder="Note, e.g. Task 4 started" />
             <button onclick="saveNewEntry('${singleGroup.key}')">+ Add</button>
+          </div>
+        `;
+      }
+    }
+
+    const relabelBar = document.getElementById('logRelabelForm');
+    if (relabelBar) {
+      const singleGroup = (currentLogTabFilter !== '__all__' && currentLogTabFilter !== '__unassigned__') ? visibleGroups[0] : null;
+      if (!singleGroup || relabelFormOpenFor !== singleGroup.key) {
+        relabelBar.style.display = 'none';
+      } else {
+        relabelBar.style.display = 'block';
+        relabelBar.innerHTML = `
+          <div class="add-entry-form">
+            <select id="relabelTypeSelect" onchange="handleRelabelTypeChange()">
+              <option value="Sim Data Collect">Sim Data Collect</option>
+              <option value="UC Data Collect">UC Data Collect</option>
+              <option value="Targeted Data Collect">Targeted Data Collect</option>
+              <option value="Policy Training">Policy Training</option>
+              <option value="Lunch">Lunch</option>
+              <option value="Household Bridge Data Collection">Household Bridge Data Collection</option>
+              <option value="Other">Other...</option>
+            </select>
+            <input type="text" id="relabelOtherInput" placeholder="Describe the type" style="display:none;" />
+            <div class="target-row" id="relabelNumberRow" style="display:none;">
+              <label id="relabelNumberLabel" for="relabelNumberInput">UC #</label>
+              <input type="number" id="relabelNumberInput" min="1" />
+            </div>
+            <button onclick="submitRelabelForm('${singleGroup.key}')">Save Relabel</button>
+            <button class="secondary" onclick="cancelRelabelForm()">Cancel</button>
           </div>
         `;
       }
@@ -3369,6 +3400,77 @@ let entries = [];
       showStatus('⚠ Could not find that booking');
       return;
     }
+    const info = getBookingLifecycleInfo(bookingEntries);
+    relabelFormOpenFor = bookingId;
+    renderLog();
+    // Pre-fill the form with the booking's current type/number once it's
+    // actually in the DOM, rather than threading this through renderLog.
+    setTimeout(() => {
+      const typeSelect = document.getElementById('relabelTypeSelect');
+      const numberInput = document.getElementById('relabelNumberInput');
+      if (!typeSelect) return;
+      const validTypes = ['Sim Data Collect', 'UC Data Collect', 'Targeted Data Collect', 'Policy Training', 'Lunch', 'Household Bridge Data Collection'];
+      if (validTypes.includes(info.type)) {
+        typeSelect.value = info.type;
+      } else if (info.type !== 'Unknown') {
+        typeSelect.value = 'Other';
+        const otherInput = document.getElementById('relabelOtherInput');
+        if (otherInput) { otherInput.style.display = 'block'; otherInput.value = info.type; }
+      }
+      if (numberInput) numberInput.value = info.ucNumber || info.policyNumber || info.hbTaskNumber || '';
+      handleRelabelTypeChange();
+    }, 0);
+  }
+
+  function handleRelabelTypeChange() {
+    const typeSelect = document.getElementById('relabelTypeSelect');
+    const otherInput = document.getElementById('relabelOtherInput');
+    const numberRow = document.getElementById('relabelNumberRow');
+    const numberLabel = document.getElementById('relabelNumberLabel');
+    if (!typeSelect) return;
+    const type = typeSelect.value;
+    otherInput.style.display = (type === 'Other') ? 'block' : 'none';
+    const needsNumber = (type === 'UC Data Collect' || type === 'Targeted Data Collect' || type === 'Household Bridge Data Collection' || type === 'Policy Training');
+    numberRow.style.display = needsNumber ? 'flex' : 'none';
+    if (numberLabel) {
+      numberLabel.textContent = (type === 'Policy Training') ? 'Policy # (optional)' : (type === 'Household Bridge Data Collection') ? 'Task #' : 'UC #';
+    }
+  }
+
+  function cancelRelabelForm() {
+    relabelFormOpenFor = null;
+    renderLog();
+  }
+
+  function submitRelabelForm(bookingId) {
+    const typeSelect = document.getElementById('relabelTypeSelect');
+    const otherInput = document.getElementById('relabelOtherInput');
+    const numberInput = document.getElementById('relabelNumberInput');
+    const newType = (typeSelect.value === 'Other') ? otherInput.value.trim() : typeSelect.value;
+    if (!newType) { showStatus('⚠ Pick a type to relabel to'); return; }
+
+    let newUcNumber = null, newPolicyNumber = null, newHbTaskNumber = null;
+    const num = parseInt(numberInput.value, 10);
+    if (newType === 'UC Data Collect' || newType === 'Targeted Data Collect') {
+      if (!num || num < 1) { showStatus(`⚠ ${newType} needs a valid UC # — relabel cancelled`); return; }
+      newUcNumber = num;
+    } else if (newType === 'Policy Training') {
+      if (num > 0) newPolicyNumber = num;
+    } else if (newType === 'Household Bridge Data Collection') {
+      if (!num || num < 1) { showStatus('⚠ Household Bridge needs a valid Task # — relabel cancelled'); return; }
+      newHbTaskNumber = num;
+    }
+
+    applyRelabel(bookingId, newType, newUcNumber, newPolicyNumber, newHbTaskNumber);
+    relabelFormOpenFor = null;
+  }
+
+  // The actual update logic, shared regardless of how the new type/number
+  // were collected — finds (or creates, if missing) the booking's start
+  // entry and rewrites its note to the new, correctly-formatted identity.
+  function applyRelabel(bookingId, newType, newUcNumber, newPolicyNumber, newHbTaskNumber) {
+    const bookingEntries = entries.filter(e => e.bookingId === bookingId)
+      .sort((a, b) => (entrySortValue(a) - entrySortValue(b)) || (a.seq - b.seq));
     let startEntry = bookingEntries.find(e => e.type === 'Session' && /new session started/i.test(e.note || ''));
     // The original start entry can end up missing — deleted, or never
     // correctly created in the first place — leaving a booking permanently
@@ -3390,35 +3492,6 @@ let entries = [];
         durationSeconds: null,
         bookingId: bookingId
       };
-    }
-    const info = getBookingLifecycleInfo(bookingEntries);
-    const validTypes = ['Sim Data Collect', 'UC Data Collect', 'Policy Training', 'Lunch', 'Household Bridge Data Collection'];
-    const currentIdSuffix = info.ucNumber ? ` (UC #${info.ucNumber})` : info.policyNumber ? ` (Policy #${info.policyNumber})` : info.hbTaskNumber ? ` (Task #${info.hbTaskNumber})` : '';
-
-    const typed = prompt(
-      isNewStartEntry
-        ? `This booking is missing its original start entry, so it shows as "Unknown". Enter its actual type — one of:\n${validTypes.join(', ')}\n(or type something custom):`
-        : `Relabel this booking.\n\nCurrently: ${info.type}${currentIdSuffix}\n\nEnter the new type — one of:\n${validTypes.join(', ')}\n(or type something custom):`,
-      info.type === 'Unknown' ? '' : info.type
-    );
-    if (typed === null || !typed.trim()) return; // cancelled
-    const newType = typed.trim();
-
-    let newUcNumber = null, newPolicyNumber = null, newHbTaskNumber = null;
-    if (newType === 'UC Data Collect') {
-      const val = prompt('UC #:', info.ucNumber || '');
-      const n = parseInt(val, 10);
-      if (!n || n < 1) { showStatus('⚠ UC Data Collect needs a valid UC # — relabel cancelled'); return; }
-      newUcNumber = n;
-    } else if (newType === 'Policy Training') {
-      const val = prompt('Policy # (optional — leave blank for none):', info.policyNumber || '');
-      const n = parseInt(val, 10);
-      if (n > 0) newPolicyNumber = n;
-    } else if (newType === 'Household Bridge Data Collection') {
-      const val = prompt('Task #:', info.hbTaskNumber || '');
-      const n = parseInt(val, 10);
-      if (!n || n < 1) { showStatus('⚠ Household Bridge needs a valid Task # — relabel cancelled'); return; }
-      newHbTaskNumber = n;
     }
 
     const idSuffix = newUcNumber ? ` (UC #${newUcNumber})` : newPolicyNumber ? ` (Policy #${newPolicyNumber})` : newHbTaskNumber ? ` (Task #${newHbTaskNumber})` : '';

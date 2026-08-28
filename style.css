@@ -1020,6 +1020,16 @@
     font-weight: 700;
     cursor: pointer;
   }
+  .add-entry-form button.secondary {
+    background: transparent;
+    color: var(--muted);
+    border: 1px solid var(--border);
+    font-weight: 600;
+  }
+  .add-entry-form button.secondary:hover {
+    color: var(--text);
+    border-color: var(--border-bright);
+  }
   .log-operator-breakdown {
     margin: 0 16px 14px;
     padding: 10px 14px;
