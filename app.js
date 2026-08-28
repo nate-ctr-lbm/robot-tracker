@@ -1452,7 +1452,22 @@ let entries = [];
     const timeInput = row.querySelector('.edit-time-input');
     const entry = entries.find(x => x.id === id);
     if (entry) {
-      entry.note = input.value.trim();
+      const newNote = input.value.trim();
+      // The same risk "+ Add Entry" already guards against: if this entry
+      // currently reads as a real "New session started" or "Session
+      // reopened" marker (the two patterns everything else parses a
+      // booking's identity from), and the edit would strip out the
+      // em-dash-separated type, the booking silently becomes "Unknown" —
+      // even if someone only meant to fix a typo or the time. The Edit
+      // button has no validation otherwise, and it sits on every row,
+      // including this specific one.
+      const wasLifecycleMarker = entry.type === 'Session' && /(new session started|session reopened)/i.test(entry.note || '') && (entry.note || '').includes('—');
+      const stillHasMarkerPhrase = /(new session started|session reopened)/i.test(newNote);
+      if (wasLifecycleMarker && (!newNote.includes('—') || !stillHasMarkerPhrase)) {
+        showStatus('⚠ Keep the — (em dash) and the type in this note, e.g. "New session started — UC Data Collect (UC #1)" — removing it will make this booking show as "Unknown" everywhere');
+        return;
+      }
+      entry.note = newNote;
       const updates = { note: entry.note };
       if (timeInput && timeInput.value) {
         entry.timestamp = inputTimeToAppTime(timeInput.value);
