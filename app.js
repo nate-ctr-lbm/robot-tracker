@@ -3535,6 +3535,7 @@ let entries = [];
 
     renderLog();
     renderActiveBookingsList();
+    updateTotals();
     showStatus(`Relabeled to ${newType}${idSuffix}`);
   }
 
