@@ -390,6 +390,10 @@ let entries = [];
   function updateDowntimeButton() {
     const btn = document.getElementById('downtimeActionBtn');
     btn.textContent = downtimeInProgress ? '▶ End Downtime' : '⏸ Start Downtime';
+    // Never leave this collapsed while something's actually running — the
+    // whole point of collapsing by default is reducing clutter when idle,
+    // not hiding an active state someone needs to find and stop.
+    if (downtimeInProgress) showSubStateCard('downtime');
   }
 
   function autoCloseLunch(reason) {
@@ -452,6 +456,7 @@ let entries = [];
     const btn = document.getElementById('lunchActionBtn');
     if (!btn) return;
     btn.textContent = lunchInProgress ? '▶ End Lunch' : '🍽 Start Lunch';
+    if (lunchInProgress) showSubStateCard('lunch');
   }
 
   function formatDuration(totalSeconds) {
@@ -1001,7 +1006,7 @@ let entries = [];
     clockPaused = !clockPaused;
     const btn = document.getElementById('clockToggleBtn');
     if (clockPaused) {
-      btn.textContent = '▶ Resume Clock';
+      btn.textContent = '▶ Resume';
       btn.classList.add('paused');
       // Freeze any in-progress task timer so paused time isn't counted
       if (taskInProgress && taskStartTimestamp) {
@@ -1018,7 +1023,7 @@ let entries = [];
       }
       showStatus('Clock paused');
     } else {
-      btn.textContent = '⏸ Pause Clock';
+      btn.textContent = '⏸ Pause';
       btn.classList.remove('paused');
       // Resume task timer, accounting for time already elapsed before pause
       if (taskInProgress && pausedTaskElapsed !== null) {
@@ -3206,6 +3211,41 @@ let entries = [];
     const collapsed = body.style.display === 'none';
     body.style.display = collapsed ? 'block' : 'none';
     toggle.textContent = collapsed ? '▾ hide' : '▸ show';
+  }
+
+  // The add-form stays hidden by default even once the schedule card itself
+  // is open — most visits just need to glance at progress, not add a new
+  // item, so showing the full form unconditionally added visual weight
+  // for something rarely used in the moment.
+  function toggleScheduleAddForm(suffix) {
+    suffix = suffix || '';
+    const form = document.getElementById('scheduleAddForm' + suffix);
+    const prompt = document.getElementById('scheduleAddPrompt' + suffix);
+    if (!form) return;
+    const showing = form.style.display !== 'none';
+    form.style.display = showing ? 'none' : 'flex';
+    if (prompt) prompt.style.display = showing ? 'block' : 'none';
+  }
+
+  // Downtime and Lunch collapse by default, same reasoning as the Schedule
+  // card — most visits don't need them, so hiding reduces visual weight
+  // without losing the function. Run Time deliberately stays uncollapsed,
+  // since it's the primary, most-used action on the page.
+  function toggleSubStateCard(type) {
+    const body = document.getElementById(type + 'CardBody');
+    const toggle = document.getElementById(type + 'CardToggle');
+    if (!body || !toggle) return;
+    const collapsed = body.style.display === 'none';
+    body.style.display = collapsed ? 'block' : 'none';
+    toggle.textContent = collapsed ? '▾ hide' : '▸ show';
+  }
+
+  function showSubStateCard(type) {
+    const body = document.getElementById(type + 'CardBody');
+    const toggle = document.getElementById(type + 'CardToggle');
+    if (!body || !toggle) return;
+    body.style.display = 'block';
+    toggle.textContent = '▾ hide';
   }
 
   function removeScheduleItem(entryId) {

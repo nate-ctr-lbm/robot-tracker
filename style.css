@@ -179,8 +179,19 @@
   }
   .kpi-secondary-row {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-    gap: 16px;
+    grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .kpi-secondary-row .kpi-box {
+    background: none;
+    border: none;
+    border-right: 1px solid var(--border);
+  }
+  .kpi-secondary-row .kpi-box:last-child {
+    border-right: none;
   }
   .kpi-box {
     background: var(--panel);
@@ -193,7 +204,7 @@
     border-bottom: 2px solid var(--accent);
   }
   .kpi-secondary {
-    padding: 18px 16px;
+    padding: 14px 10px;
   }
   .kpi-label {
     font-family: var(--font-display);
@@ -219,7 +230,7 @@
     font-size: 42px;
   }
   .kpi-secondary .kpi-value {
-    font-size: 20px;
+    font-size: 17px;
   }
   /* Widget grid mode: flatten the two functional columns via display:contents
      so every card becomes a direct, uniformly-sized item in one grid,
@@ -570,6 +581,15 @@
   }
   .clock-toggle:hover { color: var(--text); border-color: var(--text); }
   .clock-toggle.paused { color: var(--accent2); border-color: var(--accent2); }
+  .clock-compact {
+    padding: 10px;
+    margin-bottom: 12px;
+  }
+  .clock-toggle-compact {
+    margin-top: 0;
+    font-size: 11px;
+    padding: 5px 12px;
+  }
   .totals-row {
     display: grid;
     grid-template-columns: 1fr 1fr;

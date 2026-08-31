@@ -103,10 +103,13 @@
   </div>
 
   <section class="card schedule-card" id="scheduleCard">
-    <div class="section-label">Today's Schedule <span class="schedule-card-toggle" onclick="toggleScheduleCard()" id="scheduleCardToggle">▾ hide</span></div>
-    <div id="scheduleCardBody">
+    <div class="section-label">Today's Schedule <span class="schedule-card-toggle" onclick="toggleScheduleCard()" id="scheduleCardToggle">▸ show</span></div>
+    <div id="scheduleCardBody" style="display:none;">
       <div id="scheduleCardList" class="schedule-list"></div>
-      <div class="schedule-add-form">
+      <div id="scheduleAddPromptCard" style="text-align:center;">
+        <a href="#" class="relabel-link" onclick="toggleScheduleAddForm('Card'); return false;">+ Add to schedule</a>
+      </div>
+      <div class="schedule-add-form" id="scheduleAddFormCard" style="display:none;">
         <select id="scheduleTypeSelectCard">
           <option value="">Type...</option>
           <option value="Sim Data Collect">Sim Data Collect</option>
@@ -280,10 +283,10 @@
 
   <section class="card status-card">
     <div class="section-label">Live Status &amp; Totals</div>
-    <div class="clock">
-      <div class="time" id="clockTime">--:--:--</div>
-      <div class="date" id="clockDate">--</div>
-      <button class="clock-toggle" id="clockToggleBtn" onclick="toggleClock()">⏸ Pause Clock</button>
+    <div class="clock clock-compact">
+      <div class="time" id="clockTime" style="display:none;">--:--:--</div>
+      <div class="date" id="clockDate" style="display:none;">--</div>
+      <button class="clock-toggle clock-toggle-compact" id="clockToggleBtn" onclick="toggleClock()">⏸ Pause</button>
     </div>
 
     <div class="downtime-alert" id="downtimeAlert" style="display:none;"></div>
@@ -322,7 +325,8 @@
   </section>
 
   <section class="card downtime-card">
-    <div class="section-label">Downtime</div>
+    <div class="section-label">Downtime <span class="schedule-card-toggle" onclick="toggleSubStateCard('downtime')" id="downtimeCardToggle">&#9656; show</span></div>
+    <div id="downtimeCardBody" style="display:none;">
     <select id="downtimeCategorySelect">
       <option value="">— Select a reason (required) —</option>
       <optgroup label="General">
@@ -365,13 +369,16 @@
     <div class="buttons" style="margin-top:10px;">
       <button class="btn-downtime" id="downtimeActionBtn" onclick="handleDowntimeAction()" style="grid-column: 1 / -1;">⏸ Start Downtime</button>
     </div>
+    </div>
   </section>
 
   <section class="card lunch-card">
-    <div class="section-label">Lunch</div>
+    <div class="section-label">Lunch <span class="schedule-card-toggle" onclick="toggleSubStateCard('lunch')" id="lunchCardToggle">▸ show</span></div>
+    <div id="lunchCardBody" style="display:none;">
     <p class="lunch-card-hint">Use this to pause for lunch without ending your booking — for a lunch break with nothing else running, start a Lunch booking instead.</p>
     <div class="buttons" style="margin-top:10px;">
       <button class="btn-lunch" id="lunchActionBtn" onclick="handleLunchAction()" style="grid-column: 1 / -1;">🍽 Start Lunch</button>
+    </div>
     </div>
   </section>
   </div>
