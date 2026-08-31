@@ -168,6 +168,80 @@
     border-color: var(--accent);
     color: #05221c;
   }
+  /* Stays visible no matter how far down the page you've scrolled, so
+     what's currently running is never out of sight once you're down at
+     the Session Log or Export buttons. */
+  .sticky-status-bar {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--panel-alt);
+    border-bottom: 1px solid var(--border-bright);
+    padding: 8px 24px;
+    margin: 0 -24px 16px;
+    font-family: var(--font-display);
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .sticky-status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--muted);
+    flex-shrink: 0;
+  }
+  .sticky-status-dot.state-active {
+    background: var(--confirm);
+    box-shadow: 0 0 6px var(--confirm);
+  }
+  .sticky-status-dot.state-downtime {
+    background: var(--accent2);
+    box-shadow: 0 0 6px var(--accent2);
+  }
+  .sticky-status-dot.state-lunch {
+    background: var(--lunch-signal);
+    box-shadow: 0 0 6px var(--lunch-signal);
+  }
+  .sticky-status-text {
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .page-nav-bar {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    margin-bottom: 16px;
+  }
+  .page-nav-tab {
+    display: block;
+    text-align: center;
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    color: var(--muted);
+    border-radius: 3px;
+    padding: 10px 12px;
+    font-size: 12px;
+    font-family: var(--font-display);
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    text-decoration: none;
+    cursor: pointer;
+  }
+  .page-nav-tab:hover {
+    border-color: var(--border-bright);
+    color: var(--text);
+  }
+  .page-nav-tab.active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #05221c;
+  }
   .kpi-bar {
     margin-bottom: 32px;
   }

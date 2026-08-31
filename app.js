@@ -498,6 +498,40 @@ let entries = [];
     }
   }
 
+  // Stays visible while scrolled anywhere on the page — same priority
+  // order and state as the "Currently" pill above, but includes which
+  // booking it's for, since that's the part that's out of view once
+  // you're scrolled past the Bookings card.
+  function updateStickyStatus() {
+    const dot = document.getElementById('stickyStatusDot');
+    const text = document.getElementById('stickyStatusText');
+    if (!dot || !text) return;
+    dot.classList.remove('state-active', 'state-downtime', 'state-lunch');
+
+    if (!myBookingId || sessionEnded) {
+      text.textContent = 'Not attached to a booking';
+      return;
+    }
+
+    const idSuffix = currentUcNumber ? ` (UC #${currentUcNumber})` : currentPolicyNumber ? ` (Policy #${currentPolicyNumber})` : currentHbTaskNumber ? ` (Task #${currentHbTaskNumber})` : '';
+    const bookingLabel = `${mainSessionType}${idSuffix}`;
+
+    if (lunchInProgress) {
+      dot.classList.add('state-lunch');
+      text.textContent = `${bookingLabel} — On Lunch`;
+    } else if (taskInProgress) {
+      dot.classList.add('state-active');
+      const desc = currentTaskDescription ? ` — ${currentTaskDescription}` : '';
+      text.textContent = `${bookingLabel} — Running Task ${currentTaskNumber}${desc}`;
+    } else if (downtimeInProgress) {
+      dot.classList.add('state-downtime');
+      const cat = currentDowntimeCategory ? ` (${currentDowntimeCategory})` : '';
+      text.textContent = `${bookingLabel} — Downtime${cat}`;
+    } else {
+      text.textContent = `${bookingLabel} — Idle`;
+    }
+  }
+
   // Given a booking's own entries (already sorted chronologically), figures
   // out whether it's CURRENTLY ongoing or closed. A booking can be started,
   // ended, and reopened more than once — what matters is whichever of
@@ -638,6 +672,7 @@ let entries = [];
     updateSessionDuration(sorted);
     setBoth('totalTasksDisplay', tasksCompleted);
     updateCurrentStatusPill();
+    updateStickyStatus();
     renderScheduleList();
     saveToStorage();
   }
@@ -3987,8 +4022,9 @@ let entries = [];
 
   function applyPageMode() {
     const typeSelect = document.getElementById('mainSessionTypeSelect');
-    const navLink = document.getElementById('pageNavLink');
-    if (!typeSelect || !navLink) return;
+    const tabData = document.getElementById('pageNavTabData');
+    const tabPolicy = document.getElementById('pageNavTabPolicy');
+    if (!typeSelect) return;
 
     Array.from(typeSelect.options).forEach(opt => {
       if (opt.classList.contains('opt-data')) {
@@ -3998,12 +4034,9 @@ let entries = [];
       }
     });
 
-    if (pageMode === 'policy') {
-      navLink.textContent = '→ DATA COLLECTION';
-      navLink.href = 'index.html';
-    } else {
-      navLink.textContent = '→ POLICY TRAINING';
-      navLink.href = 'policy-training.html';
+    if (tabData && tabPolicy) {
+      tabData.classList.toggle('active', pageMode === 'data');
+      tabPolicy.classList.toggle('active', pageMode === 'policy');
     }
   }
 
