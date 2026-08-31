@@ -3374,6 +3374,20 @@ let entries = [];
       renderActiveBookingsList();
       return;
     }
+    // Same duplicate-identity safeguard startOrJoinBooking already applies —
+    // a different, currently-open booking might have started under this
+    // exact same type+number since this one closed. Reopening it anyway
+    // would create two simultaneously-open bookings with the identical
+    // identity, ambiguous which to Join.
+    const reopenIdentity = bookingIdentifier(info.type, info.ucNumber, info.policyNumber, info.hbTaskNumber);
+    const collision = computeActiveBookings().find(b =>
+      b.bookingId !== bookingId && bookingIdentifier(b.type, b.ucNumber, b.policyNumber, b.hbTaskNumber) === reopenIdentity
+    );
+    if (collision) {
+      showStatus(`⚠ ${info.type}${info.ucNumber ? ` (UC #${info.ucNumber})` : ''} is already open as a different booking — join that one instead, or relabel this one first`);
+      renderActiveBookingsList();
+      return;
+    }
     const idSuffix = info.ucNumber ? ` (UC #${info.ucNumber})` : info.policyNumber ? ` (Policy #${info.policyNumber})` : info.hbTaskNumber ? ` (Task #${info.hbTaskNumber})` : '';
     logEntry('Session', `Session reopened — ${info.type}${idSuffix}`, null, null, bookingId);
     attachToBooking(
@@ -3459,6 +3473,21 @@ let entries = [];
     } else if (newType === 'Household Bridge Data Collection') {
       if (!num || num < 1) { showStatus('⚠ Household Bridge needs a valid Task # — relabel cancelled'); return; }
       newHbTaskNumber = num;
+    }
+
+    // Same safeguard startOrJoinBooking already applies when starting a
+    // booking — relabeling was bypassing it entirely, letting two
+    // different, simultaneously-open bookings end up with the identical
+    // identity (ambiguous which to Join, and the schedule can't tell them
+    // apart either).
+    const newIdentity = bookingIdentifier(newType, newUcNumber, newPolicyNumber, newHbTaskNumber);
+    const collision = computeActiveBookings().find(b =>
+      b.bookingId !== bookingId && bookingIdentifier(b.type, b.ucNumber, b.policyNumber, b.hbTaskNumber) === newIdentity
+    );
+    if (collision) {
+      const idSuffix = newUcNumber ? ` (UC #${newUcNumber})` : newPolicyNumber ? ` (Policy #${newPolicyNumber})` : newHbTaskNumber ? ` (Task #${newHbTaskNumber})` : '';
+      showStatus(`⚠ ${newType}${idSuffix} is already open as a different booking — relabel cancelled to avoid two bookings with the same identity`);
+      return;
     }
 
     applyRelabel(bookingId, newType, newUcNumber, newPolicyNumber, newHbTaskNumber);
