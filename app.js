@@ -17,12 +17,14 @@ let entries = [];
   let viewingDate = null; // set on init to today's date string
   let followingToday = true; // true = auto-track today; false = pinned to a specific past/future date
   let currentOperator = 'Ajar';
+  let operatorRemembered = false;
   let mainSessionType = '';
   let idleThresholdMinutes = 5;
   let lastActivityTime = new Date();
   let autoDowntimeActive = false;
 
   const PREFS_KEY = 'walden_robot_use_tracker_prefs_v1';
+  const PASSCODE_VERIFIED_KEY = 'walden_robot_use_tracker_passcode_verified_v1';
 
   // ---- Supabase config ----
   // The URL and publishable key below are safe to be public — this is how
@@ -125,7 +127,13 @@ let entries = [];
       const raw = localStorage.getItem(PREFS_KEY);
       if (!raw) return;
       const prefs = JSON.parse(raw);
-      currentOperator = prefs.currentOperator || 'Ajar';
+      if (prefs.currentOperator) {
+        currentOperator = prefs.currentOperator;
+        // Distinguishes "genuinely chosen before" from "just defaulted to
+        // Ajar" — both look identical by value alone, since Ajar is also
+        // the module's own fallback, so this needs its own explicit flag.
+        operatorRemembered = true;
+      }
       idleThresholdMinutes = (typeof prefs.idleThresholdMinutes === 'number') ? prefs.idleThresholdMinutes : 5;
     } catch (err) { /* ignore */ }
   }
@@ -887,7 +895,11 @@ let entries = [];
     // (e.g. left the tab open past midnight), automatically move the
     // viewing date forward and give today a fresh set of counters.
     // Nothing is deleted — yesterday's data stays exactly where it is.
-    if (followingToday && viewingDate !== todayDateString()) {
+    // viewingDate starts as null until its first real assignment further
+    // down this script — guarding against that here means a tick that
+    // somehow fires before that assignment completes can't misread "not
+    // yet initialized" as "the day changed" and fire a spurious reset.
+    if (followingToday && viewingDate !== null && viewingDate !== todayDateString()) {
       viewingDate = todayDateString();
       updateDateNavUI();
       performReset("New day — counters reset. Yesterday's log is still available via the date picker.");
@@ -4076,7 +4088,8 @@ let entries = [];
         btn.textContent = 'Unlock';
         return;
       }
-      unlockApp();
+      try { localStorage.setItem(PASSCODE_VERIFIED_KEY, 'true'); } catch (err) { /* ignore */ }
+      await unlockApp();
     } catch (err) {
       errorEl.textContent = 'Connection error — try again';
       btn.disabled = false;
@@ -4084,9 +4097,28 @@ let entries = [];
     }
   }
 
-  function unlockApp() {
+  async function unlockApp() {
     document.getElementById('loginOverlay').style.display = 'none';
-    document.getElementById('operatorPromptOverlay').style.display = 'flex';
+    if (operatorRemembered) {
+      // Already know who's operating from a previous visit on this device —
+      // the "Operator on Duty" card still lets this be corrected anytime,
+      // so skipping here doesn't lose the ability to fix a wrong guess.
+      await proceedPastOperatorSelection();
+    } else {
+      document.getElementById('operatorPromptOverlay').style.display = 'flex';
+    }
+  }
+
+  async function proceedPastOperatorSelection() {
+    document.getElementById('operatorPromptOverlay').style.display = 'none';
+    document.getElementById('scheduleOverlay').style.display = 'flex';
+    // initApp() loads entries from Supabase and does all normal init —
+    // running it now (while mainWrap is still hidden behind this overlay)
+    // means it's already complete by the time "Continue" is pressed, and
+    // renderScheduleList() below shows real, up-to-date data instead of
+    // an empty list from before entries were ever loaded.
+    await initApp();
+    renderScheduleList();
   }
 
   function handleOperatorPromptChange() {
@@ -4104,15 +4136,9 @@ let entries = [];
       return;
     }
     currentOperator = chosen;
-    document.getElementById('operatorPromptOverlay').style.display = 'none';
-    document.getElementById('scheduleOverlay').style.display = 'flex';
-    // initApp() loads entries from Supabase and does all normal init —
-    // running it now (while mainWrap is still hidden behind this overlay)
-    // means it's already complete by the time "Continue" is pressed, and
-    // renderScheduleList() below shows real, up-to-date data instead of
-    // an empty list from before entries were ever loaded.
-    await initApp();
-    renderScheduleList();
+    operatorRemembered = true;
+    saveToStorage(); // persist immediately so this is remembered next visit
+    await proceedPastOperatorSelection();
   }
 
   function confirmScheduleOverlay() {
@@ -4130,6 +4156,24 @@ let entries = [];
 
   async function initApp() {
     applyPageMode();
+    // The dropdown's own value was never synced to the actual operator
+    // anywhere — without this, it silently shows whichever option happens
+    // to be first in the HTML, regardless of who's actually selected.
+    const operatorSelectEl = document.getElementById('operatorSelect');
+    if (operatorSelectEl) {
+      const isKnownOption = Array.from(operatorSelectEl.options).some(o => o.value === currentOperator);
+      if (isKnownOption) {
+        operatorSelectEl.value = currentOperator;
+      } else if (currentOperator) {
+        // A custom "Other" name from a previous visit — add it back as a
+        // real option so the dropdown can actually display it as selected.
+        const opt = document.createElement('option');
+        opt.value = currentOperator;
+        opt.textContent = currentOperator;
+        operatorSelectEl.insertBefore(opt, operatorSelectEl.querySelector('option[value="Other"]'));
+        operatorSelectEl.value = currentOperator;
+      }
+    }
     supabaseClient = getAuthClient();
     const hasData = await initSupabaseSync();
 
@@ -4172,8 +4216,16 @@ let entries = [];
     }
     const client = getAuthClient();
     const { data } = await client.auth.getSession();
-    if (data && data.session) {
-      unlockApp();
+    // Once verified on this device, the passcode shouldn't need re-entering
+    // just from switching between the Data Collection and Policy Training
+    // pages — each is a separate page load that otherwise re-runs this
+    // check from scratch. Supabase's own session persistence is the primary
+    // signal, but this explicit flag is checked too so a page switch can't
+    // re-prompt purely from a timing quirk in how that gets restored.
+    let previouslyVerified = false;
+    try { previouslyVerified = localStorage.getItem(PASSCODE_VERIFIED_KEY) === 'true'; } catch (err) { /* ignore */ }
+    if ((data && data.session) || previouslyVerified) {
+      await unlockApp();
     }
     // Otherwise, the login overlay just stays visible, waiting for input.
   })();
