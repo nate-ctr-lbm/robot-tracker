@@ -761,7 +761,12 @@ let entries = [];
     let diff = endSeconds - firstSeconds;
     if (diff < 0) diff += 24 * 3600; // handle crossing midnight
     if (diff < 0) diff = 0;
-    setDisplay(formatDuration(diff));
+    // diff (the raw, un-subtracted span) is kept as-is below for
+    // updateDowntimeAlert's percentage math, which needs the full total as
+    // its denominator — only the displayed text itself excludes downtime.
+    const downtimeSecs = computeCategorySecondsInSegment(currentSessionEntries, 'downtime');
+    const activeDiff = Math.max(0, diff - downtimeSecs);
+    setDisplay(formatDuration(activeDiff));
 
     updateDowntimeAlert(currentSessionEntries, diff);
     renderSessionsPanel(sortedEntries);
@@ -1013,7 +1018,11 @@ let entries = [];
     document.getElementById('segDowntime').style.width = (downtimeSecs / totalElapsed * 100) + '%';
     document.getElementById('segLunch').style.width = (lunchSecs / totalElapsed * 100) + '%';
     document.getElementById('sessionProgressOperator').textContent = currentOperator || '—';
-    document.getElementById('sessionProgressElapsed').textContent = formatDuration(totalElapsed) + ' elapsed';
+    // activeSecs (excluding downtime and lunch) rather than the raw total —
+    // this now matches what the bar's own amber segment already visually
+    // represents, instead of a bigger number that silently included time
+    // spent on downtime/lunch as if it were active work.
+    document.getElementById('sessionProgressElapsed').textContent = formatDuration(activeSecs) + ' elapsed';
   }
 
   const VIEW_MODE_KEY = 'walden_robot_tracker_view_mode';
@@ -1460,6 +1469,7 @@ let entries = [];
               <option value="Sim Data Collect">Sim Data Collect</option>
               <option value="UC Data Collect">UC Data Collect</option>
               <option value="Targeted Data Collect">Targeted Data Collect</option>
+              <option value="T1 Restocking/Sorting">T1 Restocking/Sorting</option>
               <option value="Policy Training">Policy Training</option>
               <option value="Lunch">Lunch</option>
               <option value="Household Bridge Data Collection">Household Bridge Data Collection</option>
@@ -3510,7 +3520,7 @@ let entries = [];
       const typeSelect = document.getElementById('relabelTypeSelect');
       const numberInput = document.getElementById('relabelNumberInput');
       if (!typeSelect) return;
-      const validTypes = ['Sim Data Collect', 'UC Data Collect', 'Targeted Data Collect', 'Policy Training', 'Lunch', 'Household Bridge Data Collection'];
+      const validTypes = ['Sim Data Collect', 'UC Data Collect', 'Targeted Data Collect', 'T1 Restocking/Sorting', 'Policy Training', 'Lunch', 'Household Bridge Data Collection'];
       if (validTypes.includes(info.type)) {
         typeSelect.value = info.type;
       } else if (info.type !== 'Unknown') {
