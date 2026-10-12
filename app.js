@@ -3442,21 +3442,26 @@ let entries = [];
       if (afterDash && pattern.test(afterDash.trim())) bookingIds.add(e.bookingId);
     });
 
-    // Tracks the booking's own span minus downtime — not Run Time button
-    // usage specifically. A team may not click Start Run for every moment
-    // of real work, but a booking's start-to-end already reflects when the
-    // robot was actually in use for this task, so that's the number that
-    // should count toward the schedule. Reuses computeBookingActiveSpanSeconds
-    // (built for combining Leave/Reopen cycles in the summary report) so a
-    // booking that was ended and reopened later doesn't count the gap
-    // in between as if it were collection time.
+    // Tracks the booking's own span minus downtime and lunch — not Run Time
+    // button usage specifically. A team may not click Start Run for every
+    // moment of real work, but a booking's start-to-end already reflects
+    // when the robot was actually in use for this task, so that's the
+    // number that should count toward the schedule. Lunch needs excluding
+    // here same as downtime: the "Lunch button, booking stays open" option
+    // leaves the booking spanning straight across the break, so without
+    // this a lunch taken that way would count as schedule progress.
+    // Reuses computeBookingActiveSpanSeconds (built for combining
+    // Leave/Reopen cycles in the summary report) so a booking that was
+    // ended and reopened later doesn't count the gap in between as if it
+    // were collection time.
     let totalSeconds = 0;
     bookingIds.forEach(bid => {
       const bookingEntries = entries.filter(e => e.bookingId === bid)
         .sort((a, b) => (entrySortValue(a) - entrySortValue(b)) || (a.seq - b.seq));
       const span = computeBookingActiveSpanSeconds(bookingEntries);
       const downtime = computeCategorySecondsInSegment(bookingEntries, 'downtime');
-      totalSeconds += Math.max(0, span - downtime);
+      const lunch = computeCategorySecondsInSegment(bookingEntries, 'lunch');
+      totalSeconds += Math.max(0, span - downtime - lunch);
     });
 
     return {
