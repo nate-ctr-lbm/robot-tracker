@@ -24,6 +24,21 @@ let entries = [];
   let autoDowntimeActive = false;
 
   const PREFS_KEY = 'walden_robot_use_tracker_prefs_v1';
+
+  // Real, current operator playbooks for each CoRL task, from Confluence —
+  // used to surface a direct "Playbook" link whenever one of these is the
+  // active booking, instead of operators having to go hunt for it.
+  const CORL_PLAYBOOK_URLS = {
+    'T1: Restocking / sorting': 'https://lbm-c.atlassian.net/wiki/spaces/RO/pages/1044447277/T1+Restocking+Sorting+playbook',
+    'T2: Robot laser cutter tending': 'https://lbm-c.atlassian.net/wiki/spaces/LBM/pages/1046806573/Robot+Laser+Cutter+Tending+playbook+v2',
+    'T3: 3D printer tending': 'https://lbm-c.atlassian.net/wiki/spaces/LBM/pages/1041530893/3D+Printer+Tending+playbook',
+    'T4: Robot mecanum wheels': 'https://lbm-c.atlassian.net/wiki/spaces/LBM/pages/1040220163/Robot+Mecanum+Wheel+Assembly+playbook',
+    'T5: Kitting - backpack shell': 'https://lbm-c.atlassian.net/wiki/spaces/LBM/pages/1039368239/Kitting+Backpack+Shell+playbook',
+    'T6: Kitting - cables': 'https://lbm-c.atlassian.net/wiki/spaces/LBM/pages/1039302691/Kitting+Cables+playbook',
+    'T7: Kitting - laptop shell': 'https://lbm-c.atlassian.net/wiki/spaces/LBM/pages/1039302713/Kitting+Laptop+Case+playbook',
+    'T8: Robot charging robot': 'https://lbm-c.atlassian.net/wiki/spaces/LBM/pages/1053229060/Robot+Charging+Robot+playbook',
+    'T10: Transfer case data': 'https://lbm-c.atlassian.net/wiki/spaces/LBM/pages/1038385199/Load+Transfer+Case+Chain+playbook'
+  };
   const PASSCODE_VERIFIED_KEY = 'walden_robot_use_tracker_passcode_verified_v1';
 
   // ---- Supabase config ----
@@ -521,7 +536,7 @@ let entries = [];
       return;
     }
 
-    const idSuffix = currentUcNumber ? ` (UC #${currentUcNumber})` : currentPolicyNumber ? ` (Policy #${currentPolicyNumber})` : currentHbTaskNumber ? ` (Task #${currentHbTaskNumber})` : '';
+    const idSuffix = currentUcNumber ? ` (UC #${currentUcNumber})` : currentPolicyNumber ? ` (Policy #${currentPolicyNumber})` : currentHbTaskNumber ? ` (Task #${currentHbTaskNumber})` : currentRobotName ? ` (Robot: ${currentRobotName})` : '';
     const bookingLabel = `${mainSessionType}${idSuffix}`;
 
     if (lunchInProgress) {
@@ -681,6 +696,7 @@ let entries = [];
     setBoth('totalTasksDisplay', tasksCompleted);
     updateCurrentStatusPill();
     updateStickyStatus();
+    updateBookingStatusPill();
     renderScheduleList();
     saveToStorage();
   }
@@ -1175,14 +1191,38 @@ let entries = [];
           return;
         }
         // Reconcile the local optimistic entry with its real Supabase id,
-        // so later edits/deletes target the right row.
+        // so later edits/deletes target the right row — and rewrite the old
+        // id anywhere it's already rendered, or those buttons silently do
+        // nothing when clicked.
         const local = entries.find(e => e.id === entry.id);
-        if (local) local.id = data.id;
+        if (local) {
+          const oldId = local.id;
+          local.id = data.id;
+          rewriteRenderedEntryId(oldId, data.id);
+        }
       })
       .catch(err => {
         console.warn('Sync failed for entry:', err);
         setSyncStatus('offline — some entries not yet synced', 'status-error');
       });
+  }
+
+  // Every Edit/Delete/Reclassify/Remove button bakes its entry's id into its
+  // onclick at render time. When an optimistic local_ id gets swapped for
+  // the real server id after a sync, anything already on the page still
+  // points at the old one — so clicking it silently does nothing. Rewriting
+  // the old id wherever it's rendered fixes that for every component at
+  // once (log bubbles, the schedule's remove buttons, anything else that
+  // does the same) without a re-render, which would wipe out an inline edit
+  // someone happens to have open. Only ever acts on local_ ids, so it can't
+  // touch unrelated buttons.
+  function rewriteRenderedEntryId(oldId, newId) {
+    oldId = String(oldId || '');
+    if (!oldId.startsWith('local_') || !/^[A-Za-z0-9_]+$/.test(oldId) || oldId === String(newId)) return;
+    document.querySelectorAll('[data-id="' + oldId + '"]').forEach(el => el.setAttribute('data-id', newId));
+    document.querySelectorAll('[onclick*="' + oldId + '"]').forEach(el => {
+      el.setAttribute('onclick', el.getAttribute('onclick').split(oldId).join(newId));
+    });
   }
 
   function showStatus(msg) {
@@ -1258,8 +1298,9 @@ let entries = [];
             console.warn('New entry sync failed:', error);
             setSyncStatus('offline — new entry not yet synced', 'status-error');
           } else if (data) {
+            const oldId = newEntry.id;
             newEntry.id = data.id;
-            renderLog();
+            rewriteRenderedEntryId(oldId, data.id);
           }
         });
     }
@@ -1324,7 +1365,7 @@ let entries = [];
       }
       return;
     }
-    table.style.display = 'table';
+    table.style.display = 'block';
     empty.style.display = 'none';
 
     // Group by booking so you can flip between them like tabs, instead of
@@ -1353,7 +1394,7 @@ let entries = [];
         const fullBookingEntries = entries.filter(e => e.bookingId === key);
         const info = getBookingLifecycleInfo(fullBookingEntries);
         isOngoing = info.isOngoing;
-        const idSuffix = info.ucNumber ? ` (UC #${info.ucNumber})` : info.policyNumber ? ` (Policy #${info.policyNumber})` : info.hbTaskNumber ? ` (Task #${info.hbTaskNumber})` : '';
+        const idSuffix = info.ucNumber ? ` (UC #${info.ucNumber})` : info.policyNumber ? ` (Policy #${info.policyNumber})` : info.hbTaskNumber ? ` (Task #${info.hbTaskNumber})` : info.robotName ? ` (Robot: ${info.robotName})` : '';
         const operators = [...new Set(groupEntries.map(e => e.operator).filter(Boolean))];
         const first = groupEntries[groupEntries.length - 1].timestamp;
         const last = groupEntries[0].timestamp;
@@ -1469,7 +1510,17 @@ let entries = [];
               <option value="Sim Data Collect">Sim Data Collect</option>
               <option value="UC Data Collect">UC Data Collect</option>
               <option value="Targeted Data Collect">Targeted Data Collect</option>
-              <option value="T1 Restocking/Sorting">T1 Restocking/Sorting</option>
+              <optgroup label="CoRL Tasks">
+              <option value="T1: Restocking / sorting">T1: Restocking / sorting</option>
+              <option value="T2: Robot laser cutter tending">T2: Robot laser cutter tending</option>
+              <option value="T3: 3D printer tending">T3: 3D printer tending</option>
+              <option value="T4: Robot mecanum wheels">T4: Robot mecanum wheels</option>
+              <option value="T5: Kitting - backpack shell">T5: Kitting - backpack shell</option>
+              <option value="T6: Kitting - cables">T6: Kitting - cables</option>
+              <option value="T7: Kitting - laptop shell">T7: Kitting - laptop shell</option>
+              <option value="T8: Robot charging robot">T8: Robot charging robot</option>
+              <option value="T10: Transfer case data">T10: Transfer case data</option>
+              </optgroup>
               <option value="Policy Training">Policy Training</option>
               <option value="Lunch">Lunch</option>
               <option value="Household Bridge Data Collection">Household Bridge Data Collection</option>
@@ -1480,6 +1531,10 @@ let entries = [];
               <label id="relabelNumberLabel" for="relabelNumberInput">UC #</label>
               <input type="number" id="relabelNumberInput" min="1" />
             </div>
+            <div class="target-row" id="relabelRobotRow" style="display:none;">
+              <label for="relabelRobotInput">Robot</label>
+              <input type="text" id="relabelRobotInput" placeholder="e.g. Greatbrook" />
+            </div>
             <button onclick="submitRelabelForm('${singleGroup.key}')">Save Relabel</button>
             <button class="secondary" onclick="cancelRelabelForm()">Cancel</button>
           </div>
@@ -1487,28 +1542,35 @@ let entries = [];
       }
     }
 
+    // Each entry renders as a chat-style bubble instead of a table row —
+    // same underlying data, same edit/delete/reclassify behavior, just a
+    // different visual shape. The class names and data-id below are load
+    // bearing: startEdit/saveEdit/startReclassify/saveReclassify all find
+    // and replace specific pieces of a bubble by querying for exactly
+    // these, unchanged from when they targeted table cells.
+    const typeTagClass = (t) => t === 'Active' ? 'tag-active' : t === 'Session' ? 'tag-session' : t === 'Lunch' ? 'tag-lunch' : t === 'DeadTime' ? 'tag-deadtime' : 'tag-downtime';
     body.innerHTML = visibleGroups.map(g => `
       ${currentLogTabFilter === '__all__' ? `
-      <tr class="log-group-header">
-        <td colspan="6">
-          <span class="log-group-title">${escapeHtml(g.title)}</span>
-          <span class="log-group-meta">${g.meta}</span>
-        </td>
-      </tr>` : ''}
+      <div class="log-group-header">
+        <span class="log-group-title">${escapeHtml(g.title)}</span>
+        <span class="log-group-meta">${g.meta}</span>
+      </div>` : ''}
       ${g.groupEntries.map(e => `
-      <tr data-id="${e.id}">
-        <td>${formatDateShort(e.date)}</td>
-        <td class="time-cell">${e.timestamp}</td>
-        <td><span class="tag ${e.type === 'Active' ? 'tag-active' : e.type === 'Session' ? 'tag-session' : e.type === 'Lunch' ? 'tag-lunch' : e.type === 'DeadTime' ? 'tag-deadtime' : 'tag-downtime'}">${e.type === 'DeadTime' ? 'Dead Time' : e.type}</span></td>
-        <td>${e.operator ? escapeHtml(e.operator) : '<span style="color:var(--muted)">—</span>'}</td>
-        <td class="note-cell">${e.note ? escapeHtml(e.note) : '<span style="color:var(--muted)">—</span>'}</td>
-        <td>
+      <div class="log-bubble ${typeTagClass(e.type)}" data-id="${e.id}">
+        <div class="log-bubble-meta">
+          <span class="time-cell">${e.timestamp}</span>
+          <span class="log-bubble-date">${formatDateShort(e.date)}</span>
+          ${e.operator ? `<span class="log-bubble-operator">${escapeHtml(e.operator)}</span>` : ''}
+          <span class="tag ${typeTagClass(e.type)}">${e.type === 'DeadTime' ? 'Dead Time' : e.type}</span>
+        </div>
+        <div class="log-bubble-note note-cell">${e.note ? escapeHtml(e.note) : '<span style="color:var(--muted)">—</span>'}</div>
+        <div class="log-bubble-actions">
           <button class="edit-btn" onclick="startEdit('${e.id}')">Edit</button>
           ${(e.type === 'Active' && /task\s+\d+\s+(completed|compled)/i.test(e.note || ''))
             ? `<button class="reclassify-btn" onclick="startReclassify('${e.id}')">→Downtime</button>` : ''}
           <button class="delete-btn" onclick="deleteEntry('${e.id}')">Delete</button>
-        </td>
-      </tr>
+        </div>
+      </div>
       `).join('')}
     `).join('');
   }
@@ -1521,7 +1583,7 @@ let entries = [];
   function startEdit(id) {
     const entry = entries.find(x => x.id === id);
     if (!entry) return;
-    const row = document.querySelector(`tr[data-id="${id}"]`);
+    const row = document.querySelector(`[data-id="${id}"]`);
     const timeCell = row.querySelector('.time-cell') || row.children[1];
     timeCell.innerHTML = `<input type="time" step="1" class="edit-time-input" value="${appTimeToInputTime(entry.timestamp)}" />`;
     const noteCell = row.querySelector('.note-cell');
@@ -1540,7 +1602,7 @@ let entries = [];
 
   function saveEdit(id) {
     resetIdleTimer();
-    const row = document.querySelector(`tr[data-id="${id}"]`);
+    const row = document.querySelector(`[data-id="${id}"]`);
     const input = row.querySelector('.edit-input');
     const timeInput = row.querySelector('.edit-time-input');
     const entry = entries.find(x => x.id === id);
@@ -1609,7 +1671,7 @@ let entries = [];
     resetIdleTimer();
     const entry = entries.find(x => x.id === id);
     if (!entry) return;
-    const row = document.querySelector(`tr[data-id="${id}"]`);
+    const row = document.querySelector(`[data-id="${id}"]`);
     const noteCell = row.querySelector('.note-cell');
     const reasonOptionsHtml = document.getElementById('downtimeCategorySelect').innerHTML;
 
@@ -1625,7 +1687,7 @@ let entries = [];
     resetIdleTimer();
     const entry = entries.find(x => x.id === id);
     if (!entry) return;
-    const row = document.querySelector(`tr[data-id="${id}"]`);
+    const row = document.querySelector(`[data-id="${id}"]`);
     const reasonSelect = row.querySelector('.reclassify-reason-select');
     const reason = reasonSelect ? reasonSelect.value : '';
 
@@ -1817,7 +1879,7 @@ let entries = [];
       if (downtimeInProgress) {
         autoCloseDowntime('end of day');
       }
-      const idSuffix = currentUcNumber ? ` (UC #${currentUcNumber})` : currentPolicyNumber ? ` (Policy #${currentPolicyNumber})` : currentHbTaskNumber ? ` (Task #${currentHbTaskNumber})` : '';
+      const idSuffix = currentUcNumber ? ` (UC #${currentUcNumber})` : currentPolicyNumber ? ` (Policy #${currentPolicyNumber})` : currentHbTaskNumber ? ` (Task #${currentHbTaskNumber})` : currentRobotName ? ` (Robot: ${currentRobotName})` : '';
       logEntry('Session', `Session ended — ${mainSessionType}${idSuffix} — auto-ended: end of day`, null, null, myBookingId);
       detachFromMyBooking();
       showStatus('Booking auto-ended — 6:30 PM cutoff reached');
@@ -1831,7 +1893,7 @@ let entries = [];
     // which booking is "mine."
     const stillActive = computeActiveBookings().filter(b => !(myOverrideActive && b.bookingId === myBookingId));
     stillActive.forEach(b => {
-      const idSuffix = b.ucNumber ? ` (UC #${b.ucNumber})` : b.policyNumber ? ` (Policy #${b.policyNumber})` : b.hbTaskNumber ? ` (Task #${b.hbTaskNumber})` : '';
+      const idSuffix = b.ucNumber ? ` (UC #${b.ucNumber})` : b.policyNumber ? ` (Policy #${b.policyNumber})` : b.hbTaskNumber ? ` (Task #${b.hbTaskNumber})` : b.robotName ? ` (Robot: ${b.robotName})` : '';
       logEntry('Session', `Session ended — ${b.type}${idSuffix} — auto-ended: end of day`, null, null, b.bookingId);
     });
     if (stillActive.length > 0) renderActiveBookingsList();
@@ -2176,7 +2238,7 @@ let entries = [];
       let withoutDowntime = withDowntime - downtimeSecs;
       if (withoutDowntime < 0) withoutDowntime = 0;
 
-      const idSuffix = info.ucNumber ? ` (UC #${info.ucNumber})` : info.policyNumber ? ` (Policy #${info.policyNumber})` : info.hbTaskNumber ? ` (Task #${info.hbTaskNumber})` : '';
+      const idSuffix = info.ucNumber ? ` (UC #${info.ucNumber})` : info.policyNumber ? ` (Policy #${info.policyNumber})` : info.hbTaskNumber ? ` (Task #${info.hbTaskNumber})` : info.robotName ? ` (Robot: ${info.robotName})` : '';
       const operators = [...new Set(seg.map(e => e.operator).filter(Boolean))];
       return {
         name: `${info.type}${idSuffix}`,
@@ -2544,6 +2606,7 @@ let entries = [];
         policyNumber: info.ucNumber ? null : info.policyNumber,
         ucNumber: info.ucNumber,
         hbTaskNumber: info.hbTaskNumber,
+        robotName: info.robotName,
         operators: operators.join(', ') || '—',
         startDate: sorted[0].date,
         startTime: sorted[0].timestamp,
@@ -2616,7 +2679,7 @@ let entries = [];
     );
 
     container.innerHTML = sessions.map(s => {
-      const policyText = s.ucNumber ? ` (UC #${s.ucNumber})` : s.policyNumber ? ` (Policy #${s.policyNumber})` : '';
+      const policyText = s.ucNumber ? ` (UC #${s.ucNumber})` : s.policyNumber ? ` (Policy #${s.policyNumber})` : s.hbTaskNumber ? ` (Task #${s.hbTaskNumber})` : s.robotName ? ` (Robot: ${s.robotName})` : '';
       const dateRange = (s.startDate === s.endDate)
         ? `${formatDateShort(s.startDate)}, ${s.startTime} – ${s.endTime}`
         : `${formatDateShort(s.startDate)} ${s.startTime} → ${formatDateShort(s.endDate)} ${s.endTime}`;
@@ -2895,6 +2958,7 @@ let entries = [];
         currentPolicyNumber = stillActive.policyNumber ? parseInt(stillActive.policyNumber, 10) : null;
         currentUcNumber = stillActive.ucNumber ? parseInt(stillActive.ucNumber, 10) : null;
         currentHbTaskNumber = stillActive.hbTaskNumber ? parseInt(stillActive.hbTaskNumber, 10) : null;
+        currentRobotName = stillActive.robotName || null;
         sessionEnded = false;
       } else {
         // It was ended (by us or someone else) since we last checked in —
@@ -2955,6 +3019,8 @@ let entries = [];
     const otherInput = document.getElementById('mainSessionOtherInput');
     const policyInput = document.getElementById('policyNumberInput');
     const ucInput = document.getElementById('ucNumberInput');
+    const robotInput = document.getElementById('robotNameInput');
+    const robotRow = document.getElementById('robotNameRow');
     const startBookingForm = document.getElementById('startBookingForm');
     const endBookingRow = document.getElementById('endBookingRow');
     if (typeSelect) {
@@ -2974,6 +3040,15 @@ let entries = [];
     if (ucInput) {
       ucInput.value = currentUcNumber || '';
       ucInput.disabled = !sessionEnded;
+    }
+    if (robotInput && robotRow) {
+      if (!sessionEnded && currentRobotName) {
+        robotRow.style.display = 'flex';
+        robotInput.value = currentRobotName;
+        robotInput.disabled = true;
+      } else if (sessionEnded) {
+        robotInput.disabled = false;
+      }
     }
     if (startBookingForm) startBookingForm.style.display = sessionEnded ? 'block' : 'none';
     if (endBookingRow) endBookingRow.style.display = sessionEnded ? 'none' : 'block';
@@ -3133,6 +3208,7 @@ let entries = [];
     const policyRow = document.getElementById('policyNumberRow');
     const hbTaskRow = document.getElementById('hbTaskNumberRow');
     const hbTargetRow = document.getElementById('hbTargetHoursRow');
+    const robotRow = document.getElementById('robotNameRow');
     const needsUcNumber = (select.value === 'UC Data Collect' || select.value === 'Targeted Data Collect');
     otherInput.style.display = (select.value === 'Other') ? 'block' : 'none';
     ucRow.style.display = needsUcNumber ? 'flex' : 'none';
@@ -3142,6 +3218,11 @@ let entries = [];
     hbTargetRow.style.display = 'none';
     document.getElementById('hbTaskNumberInput').value = '';
     document.getElementById('hbTargetHoursInput').value = '';
+    if (robotRow) {
+      const isCorl = CORL_PLAYBOOK_URLS.hasOwnProperty(select.value);
+      robotRow.style.display = isCorl ? 'flex' : 'none';
+      if (!isCorl) document.getElementById('robotNameInput').value = '';
+    }
   }
 
   // Looks across ALL history (not just today) for a prior Household Bridge
@@ -3332,10 +3413,20 @@ let entries = [];
     // given when the item was created (nothing to parse it from) — using
     // it directly in the fallback pattern would literally search for the
     // word "null" instead of "Policy".
+    // A CoRL task's schedule target is for the task overall, not any one
+    // robot, so it should match a booking on ANY robot — same idea as a
+    // numberless Policy Training target matching any Policy #. Its
+    // bookings carry a "(Robot: ...)" suffix instead of a #-style one, so
+    // it needs its own optional pattern rather than falling through to the
+    // UC # default, which would never match and silently drop all CoRL
+    // time from the schedule.
+    const isCorlTask = CORL_PLAYBOOK_URLS.hasOwnProperty(item.type);
     const derivedNumberKind = item.numberKind || (item.type === 'Policy Training' ? 'Policy' : (item.type === 'Household Bridge Data Collection' ? 'Task' : 'UC'));
-    const numberPattern = item.number
-      ? `\\s*\\(${derivedNumberKind} #${item.number}\\)`
-      : `(?:\\s*\\(${derivedNumberKind} #\\d+\\))?`;
+    const numberPattern = isCorlTask
+      ? `(?:\\s*\\(Robot: [^)]+\\))?`
+      : item.number
+        ? `\\s*\\(${derivedNumberKind} #${item.number}\\)`
+        : `(?:\\s*\\(${derivedNumberKind} #\\d+\\))?`;
     const pattern = new RegExp(`^${item.type.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}${numberPattern}\\s*$`, 'i');
     const bookingIds = new Set();
     entries.forEach(e => {
@@ -3430,20 +3521,23 @@ let entries = [];
     let policyNumber = null;
     let ucNumber = null;
     let hbTaskNumber = null;
+    let robotName = null;
     if (startEntry) {
       const note = startEntry.note || '';
       const policyMatch = note.match(/\(Policy #(\d+)\)\s*$/);
       const ucMatch = note.match(/\(UC #(\d+)\)\s*$/);
       const hbMatch = note.match(/\(Task #(\d+)(?:,[^)]*)?\)\s*$/);
+      const robotMatch = note.match(/\(Robot: ([^)]+)\)\s*$/);
       policyNumber = policyMatch ? policyMatch[1] : null;
       ucNumber = ucMatch ? ucMatch[1] : null;
       hbTaskNumber = hbMatch ? hbMatch[1] : null;
-      const noteClean = note.replace(/\s*\(Policy #\d+\)\s*$/, '').replace(/\s*\(UC #\d+\)\s*$/, '').replace(/\s*\(Task #\d+(?:,[^)]*)?\)\s*$/, '');
+      robotName = robotMatch ? robotMatch[1].trim() : null;
+      const noteClean = note.replace(/\s*\(Policy #\d+\)\s*$/, '').replace(/\s*\(UC #\d+\)\s*$/, '').replace(/\s*\(Task #\d+(?:,[^)]*)?\)\s*$/, '').replace(/\s*\(Robot: [^)]+\)\s*$/, '');
       const typeMatch = noteClean.match(/—\s*(.+)$/);
       type = typeMatch ? typeMatch[1].trim() : 'Unknown';
     }
 
-    return { startEntry, mostRecentLifecycleEntry: mostRecent, isOngoing, type, policyNumber, ucNumber, hbTaskNumber };
+    return { startEntry, mostRecentLifecycleEntry: mostRecent, isOngoing, type, policyNumber, ucNumber, hbTaskNumber, robotName };
   }
 
   // Reopens a booking that's already been ended, so new Task/Downtime/Lunch
@@ -3476,23 +3570,24 @@ let entries = [];
     // exact same type+number since this one closed. Reopening it anyway
     // would create two simultaneously-open bookings with the identical
     // identity, ambiguous which to Join.
-    const reopenIdentity = bookingIdentifier(info.type, info.ucNumber, info.policyNumber, info.hbTaskNumber);
+    const reopenIdentity = bookingIdentifier(info.type, info.ucNumber, info.policyNumber, info.hbTaskNumber, info.robotName);
     const collision = computeActiveBookings().find(b =>
-      b.bookingId !== bookingId && bookingIdentifier(b.type, b.ucNumber, b.policyNumber, b.hbTaskNumber) === reopenIdentity
+      b.bookingId !== bookingId && bookingIdentifier(b.type, b.ucNumber, b.policyNumber, b.hbTaskNumber, b.robotName) === reopenIdentity
     );
     if (collision) {
-      showStatus(`⚠ ${info.type}${info.ucNumber ? ` (UC #${info.ucNumber})` : ''} is already open as a different booking — join that one instead, or relabel this one first`);
+      showStatus(`⚠ ${info.type}${info.ucNumber ? ` (UC #${info.ucNumber})` : info.robotName ? ` (Robot: ${info.robotName})` : ''} is already open as a different booking — join that one instead, or relabel this one first`);
       renderActiveBookingsList();
       return;
     }
-    const idSuffix = info.ucNumber ? ` (UC #${info.ucNumber})` : info.policyNumber ? ` (Policy #${info.policyNumber})` : info.hbTaskNumber ? ` (Task #${info.hbTaskNumber})` : '';
+    const idSuffix = info.ucNumber ? ` (UC #${info.ucNumber})` : info.policyNumber ? ` (Policy #${info.policyNumber})` : info.hbTaskNumber ? ` (Task #${info.hbTaskNumber})` : info.robotName ? ` (Robot: ${info.robotName})` : '';
     logEntry('Session', `Session reopened — ${info.type}${idSuffix}`, null, null, bookingId);
     attachToBooking(
       bookingId,
       info.type,
       info.policyNumber ? parseInt(info.policyNumber, 10) : null,
       info.ucNumber ? parseInt(info.ucNumber, 10) : null,
-      info.hbTaskNumber ? parseInt(info.hbTaskNumber, 10) : null
+      info.hbTaskNumber ? parseInt(info.hbTaskNumber, 10) : null,
+      info.robotName || null
     );
     showStatus(`Reopened ${info.type}`);
   }
@@ -3520,7 +3615,7 @@ let entries = [];
       const typeSelect = document.getElementById('relabelTypeSelect');
       const numberInput = document.getElementById('relabelNumberInput');
       if (!typeSelect) return;
-      const validTypes = ['Sim Data Collect', 'UC Data Collect', 'Targeted Data Collect', 'T1 Restocking/Sorting', 'Policy Training', 'Lunch', 'Household Bridge Data Collection'];
+      const validTypes = ['Sim Data Collect', 'UC Data Collect', 'Targeted Data Collect', 'T1: Restocking / sorting', 'T2: Robot laser cutter tending', 'T3: 3D printer tending', 'T4: Robot mecanum wheels', 'T5: Kitting - backpack shell', 'T6: Kitting - cables', 'T7: Kitting - laptop shell', 'T8: Robot charging robot', 'T10: Transfer case data', 'Policy Training', 'Lunch', 'Household Bridge Data Collection'];
       if (validTypes.includes(info.type)) {
         typeSelect.value = info.type;
       } else if (info.type !== 'Unknown') {
@@ -3538,6 +3633,7 @@ let entries = [];
     const otherInput = document.getElementById('relabelOtherInput');
     const numberRow = document.getElementById('relabelNumberRow');
     const numberLabel = document.getElementById('relabelNumberLabel');
+    const robotRow = document.getElementById('relabelRobotRow');
     if (!typeSelect) return;
     const type = typeSelect.value;
     otherInput.style.display = (type === 'Other') ? 'block' : 'none';
@@ -3546,6 +3642,7 @@ let entries = [];
     if (numberLabel) {
       numberLabel.textContent = (type === 'Policy Training') ? 'Policy # (optional)' : (type === 'Household Bridge Data Collection') ? 'Task #' : 'UC #';
     }
+    if (robotRow) robotRow.style.display = CORL_PLAYBOOK_URLS.hasOwnProperty(type) ? 'flex' : 'none';
   }
 
   function cancelRelabelForm() {
@@ -3557,6 +3654,7 @@ let entries = [];
     const typeSelect = document.getElementById('relabelTypeSelect');
     const otherInput = document.getElementById('relabelOtherInput');
     const numberInput = document.getElementById('relabelNumberInput');
+    const robotInput = document.getElementById('relabelRobotInput');
     const newType = (typeSelect.value === 'Other') ? otherInput.value.trim() : typeSelect.value;
     if (!newType) { showStatus('⚠ Pick a type to relabel to'); return; }
 
@@ -3572,29 +3670,35 @@ let entries = [];
       newHbTaskNumber = num;
     }
 
+    const newRobotName = robotInput ? robotInput.value.trim() : '';
+    if (CORL_PLAYBOOK_URLS.hasOwnProperty(newType) && !newRobotName) {
+      showStatus('⚠ Enter which robot — relabel cancelled');
+      return;
+    }
+
     // Same safeguard startOrJoinBooking already applies when starting a
     // booking — relabeling was bypassing it entirely, letting two
     // different, simultaneously-open bookings end up with the identical
     // identity (ambiguous which to Join, and the schedule can't tell them
     // apart either).
-    const newIdentity = bookingIdentifier(newType, newUcNumber, newPolicyNumber, newHbTaskNumber);
+    const newIdentity = bookingIdentifier(newType, newUcNumber, newPolicyNumber, newHbTaskNumber, newRobotName);
     const collision = computeActiveBookings().find(b =>
-      b.bookingId !== bookingId && bookingIdentifier(b.type, b.ucNumber, b.policyNumber, b.hbTaskNumber) === newIdentity
+      b.bookingId !== bookingId && bookingIdentifier(b.type, b.ucNumber, b.policyNumber, b.hbTaskNumber, b.robotName) === newIdentity
     );
     if (collision) {
-      const idSuffix = newUcNumber ? ` (UC #${newUcNumber})` : newPolicyNumber ? ` (Policy #${newPolicyNumber})` : newHbTaskNumber ? ` (Task #${newHbTaskNumber})` : '';
+      const idSuffix = newUcNumber ? ` (UC #${newUcNumber})` : newPolicyNumber ? ` (Policy #${newPolicyNumber})` : newHbTaskNumber ? ` (Task #${newHbTaskNumber})` : newRobotName ? ` (Robot: ${newRobotName})` : '';
       showStatus(`⚠ ${newType}${idSuffix} is already open as a different booking — relabel cancelled to avoid two bookings with the same identity`);
       return;
     }
 
-    applyRelabel(bookingId, newType, newUcNumber, newPolicyNumber, newHbTaskNumber);
+    applyRelabel(bookingId, newType, newUcNumber, newPolicyNumber, newHbTaskNumber, newRobotName || null);
     relabelFormOpenFor = null;
   }
 
   // The actual update logic, shared regardless of how the new type/number
   // were collected — finds (or creates, if missing) the booking's start
   // entry and rewrites its note to the new, correctly-formatted identity.
-  function applyRelabel(bookingId, newType, newUcNumber, newPolicyNumber, newHbTaskNumber) {
+  function applyRelabel(bookingId, newType, newUcNumber, newPolicyNumber, newHbTaskNumber, newRobotName) {
     const bookingEntries = entries.filter(e => e.bookingId === bookingId)
       .sort((a, b) => (entrySortValue(a) - entrySortValue(b)) || (a.seq - b.seq));
     let startEntry = bookingEntries.find(e => e.type === 'Session' && /new session started/i.test(e.note || ''));
@@ -3620,7 +3724,7 @@ let entries = [];
       };
     }
 
-    const idSuffix = newUcNumber ? ` (UC #${newUcNumber})` : newPolicyNumber ? ` (Policy #${newPolicyNumber})` : newHbTaskNumber ? ` (Task #${newHbTaskNumber})` : '';
+    const idSuffix = newUcNumber ? ` (UC #${newUcNumber})` : newPolicyNumber ? ` (Policy #${newPolicyNumber})` : newHbTaskNumber ? ` (Task #${newHbTaskNumber})` : newRobotName ? ` (Robot: ${newRobotName})` : '';
     const newNote = `New session started — ${newType}${idSuffix}`;
     startEntry.note = newNote;
 
@@ -3643,7 +3747,9 @@ let entries = [];
             console.warn('New start entry sync failed:', error);
             setSyncStatus('offline — relabel not yet synced', 'status-error');
           } else if (data) {
+            const oldId = startEntry.id;
             startEntry.id = data.id;
+            rewriteRenderedEntryId(oldId, data.id);
           }
         });
     }
@@ -3656,6 +3762,7 @@ let entries = [];
       currentUcNumber = newUcNumber;
       currentPolicyNumber = newPolicyNumber;
       currentHbTaskNumber = newHbTaskNumber;
+      currentRobotName = newRobotName || null;
       updateSessionButton();
     }
 
@@ -3665,14 +3772,19 @@ let entries = [];
     showStatus(`Relabeled to ${newType}${idSuffix}`);
   }
 
-  function bookingIdentifier(type, ucNum, policyNum, hbTaskNum) {
+  function bookingIdentifier(type, ucNum, policyNum, hbTaskNum, robotName) {
     // The thing that makes a booking "the same" for join-vs-start purposes:
     // for UC Data Collect and Targeted Data Collect it's the UC number;
     // for Policy Training it's the Policy number; for Household Bridge
-    // it's the task number; anything else is identified by type alone.
+    // it's the task number; for a CoRL task it's the robot name — multiple
+    // robots running the identical task type at the same time is the
+    // normal CoRL workflow, so type alone would wrongly treat a second
+    // robot's booking as a duplicate of the first and block it; anything
+    // else is identified by type alone.
     if (type === 'UC Data Collect' || type === 'Targeted Data Collect') return `${type}|${ucNum || ''}`;
     if (type === 'Policy Training') return `Policy Training|${policyNum || ''}`;
     if (type === 'Household Bridge Data Collection') return `Household Bridge Data Collection|${hbTaskNum || ''}`;
+    if (CORL_PLAYBOOK_URLS.hasOwnProperty(type)) return `${type}|${(robotName || '').trim().toLowerCase()}`;
     return `${type}|`;
   }
 
@@ -3705,6 +3817,7 @@ let entries = [];
         policyNumber: info.policyNumber,
         ucNumber: info.ucNumber,
         hbTaskNumber: info.hbTaskNumber,
+        robotName: info.robotName,
         operators: operators.join(', ') || '—',
         startDate: earliestEntry.date,
         startTime: earliestEntry.timestamp
@@ -3733,6 +3846,7 @@ let entries = [];
           progressText = ` — ${formatDuration(progress.accumulatedSeconds)} of ${progress.targetHours}h`;
         }
       }
+      else if (b.robotName) idText = ` (Robot: ${b.robotName})`;
       const isMine = b.bookingId === myBookingId;
       return `
         <div class="active-booking-row">
@@ -3778,13 +3892,15 @@ let entries = [];
 
   let currentPolicyNumber = null;
   let currentUcNumber = null;
+  let currentRobotName = null;
 
-  function attachToBooking(bookingId, type, policyNumber, ucNumber, hbTaskNumber) {
+  function attachToBooking(bookingId, type, policyNumber, ucNumber, hbTaskNumber, robotName) {
     myBookingId = bookingId;
     mainSessionType = type;
     currentPolicyNumber = policyNumber;
     currentUcNumber = ucNumber;
     currentHbTaskNumber = hbTaskNumber || null;
+    currentRobotName = robotName || null;
     sessionEnded = false;
     try { sessionStorage.setItem(MY_BOOKING_KEY, bookingId); } catch (err) { /* ignore */ }
     closeDeadTime();
@@ -3805,6 +3921,7 @@ let entries = [];
     currentPolicyNumber = null;
     currentUcNumber = null;
     currentHbTaskNumber = null;
+    currentRobotName = null;
     sessionEnded = true;
     try { sessionStorage.removeItem(MY_BOOKING_KEY); } catch (err) { /* ignore */ }
 
@@ -3814,12 +3931,14 @@ let entries = [];
     const ucInput = document.getElementById('ucNumberInput');
     const hbTaskInput = document.getElementById('hbTaskNumberInput');
     const hbTargetInput = document.getElementById('hbTargetHoursInput');
+    const robotInput = document.getElementById('robotNameInput');
     if (typeSelect) { typeSelect.value = ''; typeSelect.disabled = false; }
     if (otherInput) { otherInput.value = ''; otherInput.style.display = 'none'; otherInput.disabled = false; }
     if (policyInput) { policyInput.value = ''; policyInput.disabled = false; }
     if (ucInput) { ucInput.value = ''; ucInput.disabled = false; }
     if (hbTaskInput) { hbTaskInput.value = ''; hbTaskInput.disabled = false; }
     if (hbTargetInput) { hbTargetInput.value = ''; hbTargetInput.disabled = false; document.getElementById('hbTargetHoursRow').style.display = 'none'; }
+    if (robotInput) { robotInput.value = ''; robotInput.disabled = false; document.getElementById('robotNameRow').style.display = 'none'; }
 
     const startBookingForm = document.getElementById('startBookingForm');
     if (startBookingForm) startBookingForm.style.display = 'block';
@@ -3845,8 +3964,8 @@ let entries = [];
       renderActiveBookingsList();
       return;
     }
-    logEntry('Session', `Joined booking — ${booking.type}${booking.ucNumber ? ` (UC #${booking.ucNumber})` : booking.policyNumber ? ` (Policy #${booking.policyNumber})` : booking.hbTaskNumber ? ` (Task #${booking.hbTaskNumber})` : ''}`, null, null, bookingId);
-    attachToBooking(bookingId, booking.type, booking.policyNumber, booking.ucNumber, booking.hbTaskNumber);
+    logEntry('Session', `Joined booking — ${booking.type}${booking.ucNumber ? ` (UC #${booking.ucNumber})` : booking.policyNumber ? ` (Policy #${booking.policyNumber})` : booking.hbTaskNumber ? ` (Task #${booking.hbTaskNumber})` : booking.robotName ? ` (Robot: ${booking.robotName})` : ''}`, null, null, bookingId);
+    attachToBooking(bookingId, booking.type, booking.policyNumber, booking.ucNumber, booking.hbTaskNumber, booking.robotName);
     showStatus(`Joined ${booking.type}`);
   }
 
@@ -3866,6 +3985,7 @@ let entries = [];
     const ucInput = document.getElementById('ucNumberInput');
     const hbTaskInput = document.getElementById('hbTaskNumberInput');
     const hbTargetInput = document.getElementById('hbTargetHoursInput');
+    const robotInput = document.getElementById('robotNameInput');
 
     const chosenType = (typeSelect.value === 'Other') ? otherInput.value.trim() : typeSelect.value;
     if (!chosenType) {
@@ -3879,6 +3999,18 @@ let entries = [];
     if ((chosenType === 'UC Data Collect' || chosenType === 'Targeted Data Collect') && !ucNumber) {
       showStatus(`⚠ Enter a UC # before starting a ${chosenType} booking`);
       ucInput.focus();
+      return;
+    }
+
+    // Required for CoRL tasks specifically: several robots run the identical
+    // task type at the same time, so without a robot name there's no way to
+    // tell two simultaneous bookings of the same CoRL task apart, and the
+    // duplicate-identity check below would wrongly treat the second one as
+    // a re-start of the first.
+    const robotName = robotInput ? robotInput.value.trim() : '';
+    if (CORL_PLAYBOOK_URLS.hasOwnProperty(chosenType) && !robotName) {
+      showStatus('⚠ Enter which robot before starting a CoRL task booking');
+      robotInput.focus();
       return;
     }
     const policyVal = parseInt(policyInput.value, 10);
@@ -3909,9 +4041,9 @@ let entries = [];
 
     // If a booking with this same identity is already running, offer to
     // join it instead of starting a duplicate, confusing, overlapping one.
-    const identity = bookingIdentifier(chosenType, ucNumber, policyNumber, hbTaskNumber);
+    const identity = bookingIdentifier(chosenType, ucNumber, policyNumber, hbTaskNumber, robotName);
     const existing = computeActiveBookings().find(b =>
-      bookingIdentifier(b.type, b.ucNumber, b.policyNumber, b.hbTaskNumber) === identity
+      bookingIdentifier(b.type, b.ucNumber, b.policyNumber, b.hbTaskNumber, b.robotName) === identity
     );
     if (existing) {
       showStatus(`⚠ That's already running — click "Join" on it in the Active Bookings list above instead`);
@@ -3929,12 +4061,13 @@ let entries = [];
       const isFirstTimeForTask = (findHbTaskTarget(hbTaskNumber) === null);
       idSuffix = isFirstTimeForTask ? ` (Task #${hbTaskNumber}, Target: ${hbTargetHours}h)` : ` (Task #${hbTaskNumber})`;
     }
+    else if (robotName) idSuffix = ` (Robot: ${robotName})`;
     logEntry('Session', `New session started — ${chosenType}${idSuffix}`, null, null, bookingId);
     currentTaskNumber = 1; // a genuinely new booking starts fresh, not continuing the last one's count
     taskInProgress = false;
     taskStartTimestamp = null;
     updateTaskButton();
-    attachToBooking(bookingId, chosenType, policyNumber, ucNumber, hbTaskNumber);
+    attachToBooking(bookingId, chosenType, policyNumber, ucNumber, hbTaskNumber, robotName || null);
     showStatus('Booking started');
   }
 
@@ -3953,7 +4086,7 @@ let entries = [];
       showStatus('⚠ End Lunch before ending the booking');
       return;
     }
-    const idSuffix = currentUcNumber ? ` (UC #${currentUcNumber})` : currentPolicyNumber ? ` (Policy #${currentPolicyNumber})` : currentHbTaskNumber ? ` (Task #${currentHbTaskNumber})` : '';
+    const idSuffix = currentUcNumber ? ` (UC #${currentUcNumber})` : currentPolicyNumber ? ` (Policy #${currentPolicyNumber})` : currentHbTaskNumber ? ` (Task #${currentHbTaskNumber})` : currentRobotName ? ` (Robot: ${currentRobotName})` : '';
     logEntry('Session', `Session ended — ${mainSessionType}${idSuffix}`, null, null, myBookingId);
     showStatus('Booking ended');
     detachFromMyBooking();
@@ -3985,7 +4118,7 @@ let entries = [];
     if (lunchInProgress) {
       autoCloseLunch('left booking');
     }
-    const idSuffix = currentUcNumber ? ` (UC #${currentUcNumber})` : currentPolicyNumber ? ` (Policy #${currentPolicyNumber})` : currentHbTaskNumber ? ` (Task #${currentHbTaskNumber})` : '';
+    const idSuffix = currentUcNumber ? ` (UC #${currentUcNumber})` : currentPolicyNumber ? ` (Policy #${currentPolicyNumber})` : currentHbTaskNumber ? ` (Task #${currentHbTaskNumber})` : currentRobotName ? ` (Robot: ${currentRobotName})` : '';
     logEntry('Session', `Left booking — ${mainSessionType}${idSuffix}`, null, null, myBookingId);
     showStatus('Left the booking — it stays open for anyone else on it, or for you to rejoin later');
     detachFromMyBooking();
@@ -4006,16 +4139,47 @@ let entries = [];
     deadTimeStartTimestamp = null;
   }
 
+  // Separate from updateSessionButton because that function only runs on
+  // booking start/end/join, not on every Run Time/Downtime/Lunch toggle —
+  // called instead from the same central updateTotals() cycle as
+  // updateStickyStatus(), so it can't silently fall out of sync depending
+  // on which specific action changed the state.
+  function updateBookingStatusPill() {
+    const pill = document.getElementById('bookingStatusPill');
+    const pillText = document.getElementById('bookingStatusPillText');
+    if (!pill || !pillText) return;
+    pill.classList.remove('pill-running', 'pill-downtime', 'pill-lunch');
+    if (sessionEnded) {
+      pill.style.display = 'none';
+    } else {
+      pill.style.display = 'inline-flex';
+      if (lunchInProgress) { pill.classList.add('pill-lunch'); pillText.textContent = 'lunch'; }
+      else if (taskInProgress) { pill.classList.add('pill-running'); pillText.textContent = 'running'; }
+      else if (downtimeInProgress) { pill.classList.add('pill-downtime'); pillText.textContent = 'downtime'; }
+      else { pillText.textContent = 'idle'; }
+    }
+  }
+
   function updateSessionButton() {
     const status = document.getElementById('myBookingStatus');
     const relabelRow = document.getElementById('relabelActiveRow');
+    const playbookLink = document.getElementById('playbookLink');
+    if (playbookLink) {
+      const url = !sessionEnded ? CORL_PLAYBOOK_URLS[mainSessionType] : null;
+      if (url) {
+        playbookLink.href = url;
+        playbookLink.style.display = 'inline-flex';
+      } else {
+        playbookLink.style.display = 'none';
+      }
+    }
     if (status) {
       if (sessionEnded) {
         status.textContent = "You're not attached to a booking yet.";
         status.classList.remove('active');
         if (relabelRow) relabelRow.style.display = 'none';
       } else {
-        const idText = currentUcNumber ? ` (UC #${currentUcNumber})` : currentPolicyNumber ? ` (Policy #${currentPolicyNumber})` : currentHbTaskNumber ? ` (Task #${currentHbTaskNumber})` : '';
+        const idText = currentUcNumber ? ` (UC #${currentUcNumber})` : currentPolicyNumber ? ` (Policy #${currentPolicyNumber})` : currentHbTaskNumber ? ` (Task #${currentHbTaskNumber})` : currentRobotName ? ` (Robot: ${currentRobotName})` : '';
         let progressText = '';
         if (currentHbTaskNumber) {
           const progress = computeHbTaskProgress(currentHbTaskNumber);

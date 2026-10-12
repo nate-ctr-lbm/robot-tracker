@@ -171,6 +171,79 @@
   /* Stays visible no matter how far down the page you've scrolled, so
      what's currently running is never out of sight once you're down at
      the Session Log or Export buttons. */
+  /* Status pill — a small, rounded badge for "running"/"idle"/"downtime"
+     style states, understated rather than loud: a subtle tinted border and
+     background, a small solid dot, plain text. Matches the reference's
+     "running" badge and dot-prefixed "17 ready" / "Delayed" indicators. */
+  .status-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 12px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--panel-alt);
+    font-size: 12px;
+    font-weight: 600;
+    font-family: var(--font-display);
+    letter-spacing: 0.02em;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  .status-pill-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--muted);
+    flex-shrink: 0;
+  }
+  .status-pill.pill-running {
+    border-color: rgba(79, 209, 184, 0.35);
+    background: rgba(79, 209, 184, 0.08);
+    color: var(--confirm);
+  }
+  .status-pill.pill-running .status-pill-dot {
+    background: var(--confirm);
+    box-shadow: 0 0 5px var(--confirm);
+  }
+  .status-pill.pill-downtime {
+    border-color: rgba(224, 81, 46, 0.35);
+    background: rgba(224, 81, 46, 0.08);
+    color: var(--accent2);
+  }
+  .status-pill.pill-downtime .status-pill-dot {
+    background: var(--accent2);
+    box-shadow: 0 0 5px var(--accent2);
+  }
+  .status-pill.pill-lunch {
+    border-color: rgba(79, 209, 184, 0.35);
+    background: rgba(79, 209, 184, 0.08);
+    color: var(--lunch-signal);
+  }
+  .status-pill.pill-lunch .status-pill-dot {
+    background: var(--lunch-signal);
+  }
+
+  .playbook-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 12px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--panel-alt);
+    font-size: 12px;
+    font-weight: 600;
+    font-family: var(--font-display);
+    color: var(--muted);
+    text-decoration: none;
+    margin-left: 6px;
+  }
+  .playbook-link:hover {
+    color: var(--text);
+    border-color: var(--border-bright);
+  }
+
   .sticky-status-bar {
     position: sticky;
     top: 0;
@@ -813,7 +886,7 @@
   }
   button {
     border: none;
-    border-radius: 2px;
+    border-radius: 999px;
     padding: 14px 12px;
     font-size: 13px;
     font-weight: 600;
@@ -829,9 +902,26 @@
     color: var(--text) !important;
     cursor: not-allowed;
   }
-  .btn-active { background: var(--accent); color: #05221c; }
-  .btn-downtime { background: var(--accent2); color: #2a1200; }
-  .btn-lunch { background: var(--lunch-signal); color: #10262c; }
+  /* Subtle tinted-outline style, matching the reference's understated
+     pill buttons, while keeping each action's own color as a quick,
+     at-a-glance signal — solid fills read louder than the reference, but
+     dropping the color entirely would lose a genuinely useful cue when
+     speed matters. */
+  .btn-active {
+    background: rgba(242, 177, 52, 0.1);
+    color: var(--accent);
+    border: 1.5px solid var(--accent);
+  }
+  .btn-downtime {
+    background: rgba(224, 81, 46, 0.1);
+    color: var(--accent2);
+    border: 1.5px solid var(--accent2);
+  }
+  .btn-lunch {
+    background: rgba(79, 209, 184, 0.1);
+    color: var(--lunch-signal);
+    border: 1.5px solid var(--lunch-signal);
+  }
   .btn-export { background: var(--panel); color: var(--text); border: 1px solid var(--border); }
   .btn-clear { background: var(--panel); color: #f87171; border: 1px solid var(--border); }
   .btn-newday { background: var(--accent); color: #05221c; border: 1px solid var(--accent); font-weight: 700; }
@@ -873,7 +963,7 @@
     background: var(--panel);
     color: var(--accent2);
     border: 1px solid var(--accent2);
-    border-radius: 2px;
+    border-radius: 999px;
     padding: 12px;
     font-size: 14px;
     font-weight: 600;
@@ -888,7 +978,7 @@
     background: var(--panel);
     color: var(--muted);
     border: 1px solid var(--border);
-    border-radius: 2px;
+    border-radius: 999px;
     padding: 12px;
     font-size: 14px;
     font-weight: 600;
@@ -1248,6 +1338,132 @@
   .tag-lunch { background: rgba(167,139,250,0.2); color: var(--lunch-signal); }
   .tag-deadtime { background: rgba(138,163,159,0.2); color: var(--muted); }
   .tag-downtime { background: rgba(249,115,22,0.15); color: var(--accent2); }
+
+  /* Each log entry as a chat-style bubble instead of a table row — a left
+     accent bar in the entry's own type color for quick scanning, a small
+     muted meta line, the note as the main text, and unobtrusive actions
+     tucked below rather than in a wide, always-visible actions column. */
+  .log-group-header {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 2px 12px;
+    padding: 10px 4px 6px;
+    margin-top: 8px;
+  }
+  .log-group-header:first-child { margin-top: 0; }
+  .log-group-title {
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-size: 13px;
+    color: var(--text);
+  }
+  .log-group-meta {
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .log-bubble {
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--muted);
+    border-radius: 10px;
+    padding: 10px 14px;
+    margin-bottom: 8px;
+  }
+  .log-bubble.tag-active { border-left-color: var(--accent); }
+  .log-bubble.tag-session { border-left-color: #94a3b8; }
+  .log-bubble.tag-lunch { border-left-color: var(--lunch-signal); }
+  .log-bubble.tag-deadtime { border-left-color: var(--muted); }
+  .log-bubble.tag-downtime { border-left-color: var(--accent2); }
+  .log-bubble-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+    font-size: 11px;
+    color: var(--muted);
+    font-family: var(--font-data);
+  }
+  .log-bubble-meta .tag {
+    font-family: var(--font-display);
+    font-size: 10px;
+    padding: 2px 8px;
+  }
+  .log-bubble-date { opacity: 0.8; }
+  .log-bubble-operator {
+    font-weight: 600;
+    color: var(--text);
+  }
+  .log-bubble-note {
+    font-size: 14px;
+    color: var(--text);
+    line-height: 1.4;
+    word-break: break-word;
+  }
+  .log-bubble-actions {
+    display: flex;
+    gap: 12px;
+    margin-top: 8px;
+  }
+  .log-bubble-actions button {
+    background: none;
+    border: none;
+    border-radius: 0;
+    padding: 0;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: none;
+    letter-spacing: normal;
+    color: var(--muted);
+    cursor: pointer;
+  }
+  .log-bubble-actions .edit-btn:hover { color: var(--accent); }
+  .log-bubble-actions .delete-btn:hover { color: #f87171; }
+  .log-bubble-actions .reclassify-btn:hover { color: var(--accent2); }
+  .log-bubble .edit-input,
+  .log-bubble .edit-time-input,
+  .log-bubble .reclassify-reason-select {
+    width: 100%;
+    margin-top: 4px;
+    padding: 6px 8px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--text);
+    font-size: 13px;
+  }
+  .log-bubble .save-btn {
+    background: var(--accent) !important;
+    color: #05221c !important;
+    border-radius: 999px !important;
+    padding: 4px 14px !important;
+    font-size: 11px !important;
+    text-transform: uppercase;
+  }
+
+  /* The Session Log now sits in the right-hand column beside the task
+     controls, instead of full-width below everything — the two-panel
+     arrangement of the reference. In Grid View, where both columns get
+     flattened into tiles, it keeps spanning the full row exactly like it
+     did before the move. */
+  #twoColGrid.grid-mode .log-card { grid-column: 1 / -1; }
+
+  @media (min-width: 861px) {
+    /* A feed that scrolls within its own panel on wide screens, so a busy
+       day's log doesn't stretch the whole page. Newest entries are on top,
+       so the latest activity is always visible without scrolling. Skipped
+       on narrow screens, where scrolling inside a scrolling page is
+       awkward, and in Grid View, where the log has the full row anyway. */
+    #twoColGrid:not(.grid-mode) .log-card #logBody {
+      max-height: 60vh;
+      overflow-y: auto;
+      padding-right: 4px;
+      scrollbar-width: thin;
+      scrollbar-color: var(--border-bright) transparent;
+    }
+  }
   .empty { color: var(--muted); text-align: center; padding: 24px; font-size: 13px; }
   .edit-btn, .save-btn, .delete-btn, .reclassify-btn {
     background: transparent;

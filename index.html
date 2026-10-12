@@ -52,7 +52,17 @@
         <option value="Sim Data Collect">Sim Data Collect</option>
         <option value="UC Data Collect">UC Data Collect</option>
         <option value="Targeted Data Collect">Targeted Data Collect</option>
-        <option value="T1 Restocking/Sorting">T1 Restocking/Sorting</option>
+        <optgroup label="CoRL Tasks">
+        <option value="T1: Restocking / sorting">T1: Restocking / sorting</option>
+        <option value="T2: Robot laser cutter tending">T2: Robot laser cutter tending</option>
+        <option value="T3: 3D printer tending">T3: 3D printer tending</option>
+        <option value="T4: Robot mecanum wheels">T4: Robot mecanum wheels</option>
+        <option value="T5: Kitting - backpack shell">T5: Kitting - backpack shell</option>
+        <option value="T6: Kitting - cables">T6: Kitting - cables</option>
+        <option value="T7: Kitting - laptop shell">T7: Kitting - laptop shell</option>
+        <option value="T8: Robot charging robot">T8: Robot charging robot</option>
+        <option value="T10: Transfer case data">T10: Transfer case data</option>
+        </optgroup>
         <option value="Policy Training">Policy Training</option>
         <option value="Household Bridge Data Collection">Household Bridge Data Collection</option>
       </select>
@@ -125,7 +135,17 @@
           <option value="Sim Data Collect">Sim Data Collect</option>
           <option value="UC Data Collect">UC Data Collect</option>
           <option value="Targeted Data Collect">Targeted Data Collect</option>
-          <option value="T1 Restocking/Sorting">T1 Restocking/Sorting</option>
+          <optgroup label="CoRL Tasks">
+          <option value="T1: Restocking / sorting">T1: Restocking / sorting</option>
+          <option value="T2: Robot laser cutter tending">T2: Robot laser cutter tending</option>
+          <option value="T3: 3D printer tending">T3: 3D printer tending</option>
+          <option value="T4: Robot mecanum wheels">T4: Robot mecanum wheels</option>
+          <option value="T5: Kitting - backpack shell">T5: Kitting - backpack shell</option>
+          <option value="T6: Kitting - cables">T6: Kitting - cables</option>
+          <option value="T7: Kitting - laptop shell">T7: Kitting - laptop shell</option>
+          <option value="T8: Robot charging robot">T8: Robot charging robot</option>
+          <option value="T10: Transfer case data">T10: Transfer case data</option>
+          </optgroup>
           <option value="Policy Training">Policy Training</option>
           <option value="Household Bridge Data Collection">Household Bridge Data Collection</option>
         </select>
@@ -193,6 +213,8 @@
 <section class="card">
     <div class="section-label">Bookings</div>
 
+    <span class="status-pill" id="bookingStatusPill" style="display:none;"><span class="status-pill-dot"></span><span id="bookingStatusPillText"></span></span>
+    <a href="#" target="_blank" rel="noopener" class="playbook-link" id="playbookLink" style="display:none;">📖 Playbook</a>
     <div class="my-booking-status" id="myBookingStatus">You're not attached to a booking yet.</div>
     <div class="buttons" id="endBookingRow" style="display:none; margin-bottom:8px;">
       <button class="btn-session" onclick="endBooking()">⏹ End This Booking</button>
@@ -212,7 +234,17 @@
         <option value="Sim Data Collect" class="opt-data">Sim Data Collect</option>
         <option value="UC Data Collect" class="opt-data">UC Data Collect</option>
         <option value="Targeted Data Collect" class="opt-data">Targeted Data Collect</option>
-        <option value="T1 Restocking/Sorting" class="opt-data">T1 Restocking/Sorting</option>
+        <optgroup label="CoRL Tasks">
+        <option value="T1: Restocking / sorting" class="opt-data">T1: Restocking / sorting</option>
+        <option value="T2: Robot laser cutter tending" class="opt-data">T2: Robot laser cutter tending</option>
+        <option value="T3: 3D printer tending" class="opt-data">T3: 3D printer tending</option>
+        <option value="T4: Robot mecanum wheels" class="opt-data">T4: Robot mecanum wheels</option>
+        <option value="T5: Kitting - backpack shell" class="opt-data">T5: Kitting - backpack shell</option>
+        <option value="T6: Kitting - cables" class="opt-data">T6: Kitting - cables</option>
+        <option value="T7: Kitting - laptop shell" class="opt-data">T7: Kitting - laptop shell</option>
+        <option value="T8: Robot charging robot" class="opt-data">T8: Robot charging robot</option>
+        <option value="T10: Transfer case data" class="opt-data">T10: Transfer case data</option>
+        </optgroup>
         <option value="Policy Training" class="opt-policy">Policy Training</option>
         <option value="Lunch" class="opt-data opt-policy">Lunch</option>
         <option value="Household Bridge Data Collection" class="opt-data">Household Bridge Data Collection</option>
@@ -238,6 +270,11 @@
         <label for="hbTargetHoursInput">Target hours</label>
         <input type="number" id="hbTargetHoursInput" min="0.1" step="0.1" placeholder="e.g. 1" />
         <span class="target-unit">(first time for this task — sets the goal)</span>
+      </div>
+      <div class="target-row" id="robotNameRow" style="display:none;">
+        <label for="robotNameInput">Robot</label>
+        <input type="text" id="robotNameInput" placeholder="e.g. Greatbrook" />
+        <span class="target-unit">(required — multiple robots run this task at once)</span>
       </div>
       <div class="session-btn-row">
         <button class="btn-session" id="sessionToggleBtn" onclick="startOrJoinBooking()">▶ Start Booking</button>
@@ -390,11 +427,8 @@
     </div>
     </div>
   </section>
-  </div>
-  </div>
 
-
-  <section class="card">
+  <section class="card log-card" id="logCard">
     <div class="log">
       <div class="log-header">
         <span>Session Log</span>
@@ -405,13 +439,9 @@
       <div class="log-operator-breakdown" id="logOperatorBreakdown" style="display:none;"></div>
       <div class="log-add-entry-form" id="logAddEntryForm" style="display:none;"></div>
       <div class="log-add-entry-form" id="logRelabelForm" style="display:none;"></div>
-      <table id="logTable">
-        <thead>
-          <tr><th>Date</th><th>Time</th><th>Type</th><th>Operator</th><th>Note</th><th></th></tr>
-        </thead>
-        <tbody id="logBody">
-        </tbody>
-      </table>
+      <div id="logTable">
+        <div id="logBody"></div>
+      </div>
       <div class="empty" id="emptyState">No entries yet — press a button above to start logging.</div>
     </div>
 
@@ -430,6 +460,10 @@
       <button class="btn-clear" style="grid-column: 1 / -1;" onclick="clearLog()">CLEAR THIS DAY'S LOG</button>
     </div>
   </section>
+  </div>
+  </div>
+
+
 
   <section class="card">
     <div class="section-label">Export Specific Sessions</div>
