@@ -934,6 +934,12 @@ let entries = [];
 
     updateTaskProgressDisplay();
     updateSessionProgressBar();
+    // Schedule progress for an open booking is a live span to "now" (see
+    // computeBookingActiveSpanSeconds), but nothing was re-asking for that
+    // number on an ongoing basis — only specific events like logging a new
+    // entry triggered a re-render, so the displayed progress sat frozen at
+    // whatever it was the last time one of those happened.
+    renderScheduleList();
     // tick()'s own immediate call below happens synchronously at script
     // load time — before later const/let declarations in this file (like
     // OPERATING_HOURS_CUTOFF) have executed, which would throw a temporal
