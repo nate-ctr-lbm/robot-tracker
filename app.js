@@ -367,8 +367,21 @@ let entries = [];
     resetIdleTimer();
     const categorySelect = document.getElementById('downtimeCategorySelect');
 
+    // Task, Downtime, and Lunch are meant to be mutually exclusive — Lunch
+    // already closes out both of the others when it starts. Downtime only
+    // closed Lunch, not an in-progress Task, which let someone start a
+    // Downtime without clicking "Stop Run" first and leave that task open
+    // indefinitely while also accruing Downtime for the same stretch of
+    // time — double-counting it as both Active and Downtime.
     if (!downtimeInProgress && lunchInProgress) {
       autoCloseLunch('downtime started');
+    }
+    if (!downtimeInProgress && taskInProgress) {
+      const durationSeconds = taskStartTimestamp ? Math.round((new Date() - taskStartTimestamp) / 1000) : 0;
+      logEntry('Active', `Task ${currentTaskNumber} completed (${formatDuration(durationSeconds)}) — auto-closed: downtime started`, durationSeconds);
+      taskInProgress = false;
+      taskStartTimestamp = null;
+      updateTaskButton();
     }
 
     if (!downtimeInProgress && !categorySelect.value) {
@@ -1154,6 +1167,11 @@ let entries = [];
     }
     currentOperator = value;
     logEntry('Session', `Operator changed to ${value}`);
+    // Whoever was selected before might have left a Task/Downtime/Lunch
+    // open on this booking — close it out now that someone new has taken
+    // over, instead of leaving it to be discovered whenever that name
+    // happens to get picked again.
+    autoCloseOtherOperatorsStaleState(value);
     saveToStorage();
   }
 
@@ -2945,6 +2963,73 @@ let entries = [];
     return parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
   }
 
+  // When a booking changes hands to a new operator — someone picks a
+  // different name on this device, this device joins a booking someone
+  // else already had going, or this tab reconnects to a booking it had
+  // open before — any Task/Downtime/Lunch left dangling "started" under
+  // the PREVIOUS operator's name on this same booking needs to be closed
+  // out right now. Otherwise it just sits open until that exact operator
+  // name happens to come back around on some device — which might be
+  // hours later, or never — and whenever it finally does get closed, the
+  // duration silently swallows all the real work anyone else did on the
+  // booking in the meantime (this is how a single Downtime entry ended up
+  // logged as 1h37m when real task work was happening for most of that
+  // window — the operator who opened it wasn't the one who closed it, so
+  // nothing in between ever auto-closed it).
+  //
+  // Deliberately called only from actual handoff moments, never from the
+  // realtime sync handler — that fires continuously for every operator's
+  // ordinary activity on every connected device, and auto-closing on every
+  // tick would force-close other operators' genuinely-in-progress work
+  // within seconds of them starting it.
+  function autoCloseOtherOperatorsStaleState(newOperator) {
+    if (!myBookingId) return;
+    const bookingEntries = getTodayEntries()
+      .filter(e => e.bookingId === myBookingId)
+      .sort((a, b) => (entrySortValue(a) - entrySortValue(b)) || (a.seq - b.seq));
+    if (bookingEntries.length === 0) return;
+
+    const otherOperators = [...new Set(bookingEntries.map(e => e.operator).filter(Boolean))]
+      .filter(op => op !== newOperator);
+
+    otherOperators.forEach(op => {
+      const theirs = bookingEntries.filter(e => e.operator === op);
+
+      const taskEvents = theirs.filter(e => /task\s+\d+\s+(started|completed|compled)/i.test(e.note || ''));
+      if (taskEvents.length > 0) {
+        const last = taskEvents[taskEvents.length - 1];
+        const m = (last.note || '').match(/task\s+(\d+)\s+started/i);
+        if (m) {
+          const start = parseTimestampToDate(last.timestamp);
+          const durationSeconds = start ? Math.max(0, Math.round((new Date() - start) / 1000)) : 0;
+          logEntry('Active', `Task ${m[1]} completed (${formatDuration(durationSeconds)}) — auto-closed: operator changed`, durationSeconds, null, myBookingId, { operator: op });
+        }
+      }
+
+      const downtimeEvents = theirs.filter(e => e.type === 'Downtime');
+      if (downtimeEvents.length > 0) {
+        const last = downtimeEvents[downtimeEvents.length - 1];
+        if (/downtime\s+started/i.test(last.note || '')) {
+          const start = parseTimestampToDate(last.timestamp);
+          const durationSeconds = start ? Math.max(0, Math.round((new Date() - start) / 1000)) : 0;
+          const category = last.category || null;
+          const suffix = category ? ` — ${category}` : '';
+          logEntry('Downtime', `Downtime ended (${formatDuration(durationSeconds)}) — auto-closed: operator changed${suffix}`, durationSeconds, category, myBookingId, { operator: op });
+        }
+      }
+
+      const lunchEvents = theirs.filter(e => e.type === 'Lunch');
+      if (lunchEvents.length > 0) {
+        const last = lunchEvents[lunchEvents.length - 1];
+        if (/lunch\s+started/i.test(last.note || '')) {
+          const start = parseTimestampToDate(last.timestamp);
+          const durationSeconds = start ? Math.max(0, Math.round((new Date() - start) / 1000)) : 0;
+          logEntry('Lunch', `Lunch ended (${formatDuration(durationSeconds)}) — auto-closed: operator changed`, durationSeconds, null, myBookingId, { operator: op });
+        }
+      }
+    });
+  }
+
   function inferTaskNumberFromEntries() {
     // Restore which booking THIS TAB was attached to FIRST, and verify it's
     // still actually open (someone else might have ended it while we were
@@ -3977,6 +4062,9 @@ let entries = [];
     }
     logEntry('Session', `Joined booking — ${booking.type}${booking.ucNumber ? ` (UC #${booking.ucNumber})` : booking.policyNumber ? ` (Policy #${booking.policyNumber})` : booking.hbTaskNumber ? ` (Task #${booking.hbTaskNumber})` : booking.robotName ? ` (Robot: ${booking.robotName})` : ''}`, null, null, bookingId);
     attachToBooking(bookingId, booking.type, booking.policyNumber, booking.ucNumber, booking.hbTaskNumber, booking.robotName);
+    // Someone else may have left this booking with a Task/Downtime/Lunch
+    // still open under their name — close it out now that it's been joined.
+    autoCloseOtherOperatorsStaleState(currentOperator);
     showStatus(`Joined ${booking.type}`);
   }
 
@@ -4365,6 +4453,10 @@ let entries = [];
     // Now that entries are loaded from the shared database, figure out
     // today's live tracking state (task/downtime/lunch/session) from them.
     inferTaskNumberFromEntries();
+    // This tab is (re)connecting to whatever booking it was already on —
+    // if a different operator's name is left with something dangling open
+    // on it (see autoCloseOtherOperatorsStaleState above), close it out now.
+    autoCloseOtherOperatorsStaleState(currentOperator);
     enforceOperatingHoursCutoff();
 
     updateTaskButton();
