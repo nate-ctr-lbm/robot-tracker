@@ -3430,6 +3430,21 @@ let entries = [];
   }
 
   function removeScheduleItem(entryId) {
+    // Same category of action as deleteEntry/clearing a day's log (a real,
+    // immediate, shared delete synced to Supabase) but this was the one
+    // place doing it with no confirmation at all \u2014 a stray click on the
+    // \u2715 silently wiped the target/progress card for the WHOLE team,
+    // instantly, with nothing to undo. Matches the confirm() already used
+    // for those other two destructive actions, and is explicit that this
+    // only removes the schedule card, not any logged collection time, since
+    // that's the first thing anyone would worry about if a row they expected
+    // to see just isn't there anymore.
+    const entry = entries.find(e => e.id === entryId);
+    const parsed = entry ? parseScheduleItem(entry) : null;
+    const label = parsed ? (parsed.number ? `${parsed.type} (${parsed.numberKind} #${parsed.number})` : parsed.type) : 'this item';
+    if (!confirm(`Remove ${label} from today's schedule for everyone?\n\nThis only removes the target/progress card \u2014 none of your logged collection time is affected.`)) {
+      return;
+    }
     entries = entries.filter(e => e.id !== entryId);
     if (supabaseClient && !String(entryId).startsWith('local_')) {
       supabaseClient.from('entries').delete().eq('id', entryId)
