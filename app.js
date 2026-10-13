@@ -3454,6 +3454,56 @@ let entries = [];
     showStatus('Removed from today\u2019s schedule');
   }
 
+  // Same idea as computeBookingActiveSpanSeconds, but scoped to just TODAY
+  // for a booking that may have been opened on an earlier day. A task like
+  // "T8: Robot charging robot" is normally resumed across days with Join,
+  // not restarted fresh each morning, so its booking can still be sitting
+  // open from yesterday (or further back) with no lifecycle event of its
+  // own today marking when today's portion should begin.
+  //
+  // Deliberately conservative about where that portion starts: rather than
+  // counting from midnight (which would silently credit every unlogged
+  // overnight hour as active, just because nobody explicitly logged
+  // Downtime while asleep), it starts from the booking's own first logged
+  // entry of the day — whatever that is (a Join, a Downtime, anything).
+  // That can only count time there's actual evidence for today, never more.
+  function computeTodaysPortionOfBookingSeconds(seg) {
+    const today = todayDateString();
+    const lifecycleEvents = seg.filter(e => e.type === 'Session' && (
+      /new session started/i.test(e.note || '') ||
+      /^session ended/i.test(e.note || '') ||
+      /^session reopened/i.test(e.note || '')
+    ));
+    const before = lifecycleEvents.filter(e => e.date < today);
+    const openGoingIntoToday = before.length > 0 && !/^session ended/i.test(before[before.length - 1].note || '');
+    const todaysAll = seg.filter(e => e.date === today); // seg is already sorted by the caller
+
+    let total = 0;
+    let openStart = (openGoingIntoToday && todaysAll.length > 0) ? timeToMinutes(todaysAll[0].timestamp) : null;
+    lifecycleEvents.filter(e => e.date === today).forEach(e => {
+      const isOpen = /new session started/i.test(e.note || '') || /^session reopened/i.test(e.note || '');
+      const isClose = /^session ended/i.test(e.note || '');
+      if (isOpen) {
+        openStart = timeToMinutes(e.timestamp);
+      } else if (isClose && openStart !== null) {
+        let diff = timeToMinutes(e.timestamp) - openStart;
+        if (diff < 0) diff += 24 * 3600;
+        total += diff;
+        openStart = null;
+      }
+    });
+    if (openStart !== null) {
+      // Still open right now — count up to the current moment, same as
+      // computeBookingActiveSpanSeconds does for a same-day booking.
+      const now = new Date();
+      const nowSeconds = now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds();
+      let diff = nowSeconds - openStart;
+      if (diff < 0) diff += 24 * 3600;
+      total += diff;
+    }
+    return total;
+  }
+
   // Sums actual collected time today for whatever bookings match this
   // schedule item's type+number — same "match by type and number, sum
   // active time across every matching booking" approach already proven
@@ -3473,25 +3523,30 @@ let entries = [];
     // word "null" instead of "Policy".
     // A CoRL task's schedule target is for the task overall, not any one
     // robot, so it should match a booking on ANY robot — same idea as a
-    // numberless Policy Training target matching any Policy #. Its
-    // bookings carry a "(Robot: ...)" suffix instead of a #-style one, so
-    // it needs its own optional pattern rather than falling through to the
-    // UC # default, which would never match and silently drop all CoRL
-    // time from the schedule.
+    // numberless Policy Training target matching any Policy #.
     const isCorlTask = CORL_PLAYBOOK_URLS.hasOwnProperty(item.type);
     const derivedNumberKind = item.numberKind || (item.type === 'Policy Training' ? 'Policy' : (item.type === 'Household Bridge Data Collection' ? 'Task' : 'UC'));
-    const numberPattern = isCorlTask
-      ? `(?:\\s*\\(Robot: [^)]+\\))?`
-      : item.number
-        ? `\\s*\\(${derivedNumberKind} #${item.number}\\)`
-        : `(?:\\s*\\(${derivedNumberKind} #\\d+\\))?`;
-    const pattern = new RegExp(`^${item.type.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}${numberPattern}\\s*$`, 'i');
-    const bookingIds = new Set();
+
+    // Finding matching bookings by a "New session started" entry dated
+    // today — the original approach — misses any booking that's being
+    // CONTINUED today rather than started today: a multi-day task like
+    // robot charging is normally resumed with Join, which never writes a
+    // fresh "New session started" on day two onward. That silently drops
+    // every day after the first for any such task, however much Join/
+    // Leave/Downtime activity happens today, because the discovery check
+    // never even looks at it. Instead, this looks at every booking that
+    // had ANY activity today, and asks getBookingLifecycleInfo — the same
+    // canonical source used everywhere else a booking's identity is
+    // resolved — for its type/number from its original start entry,
+    // wherever that entry falls. A booking entirely within today behaves
+    // exactly as before (its "start entry" and "today's entries" are the
+    // same thing), so this changes nothing for the common case; it only
+    // adds the cross-day case that was previously invisible.
+    const today = todayDateString();
+    const byBooking = {};
     entries.forEach(e => {
-      if (e.type !== 'Session' || !e.bookingId || e.date !== todayDateString()) return;
-      if (!/new session started/i.test(e.note || '')) return;
-      const afterDash = (e.note || '').split('—')[1];
-      if (afterDash && pattern.test(afterDash.trim())) bookingIds.add(e.bookingId);
+      if (!e.bookingId) return;
+      (byBooking[e.bookingId] = byBooking[e.bookingId] || []).push(e);
     });
 
     // Tracks the booking's own span minus downtime and lunch — not Run Time
@@ -3502,17 +3557,25 @@ let entries = [];
     // here same as downtime: the "Lunch button, booking stays open" option
     // leaves the booking spanning straight across the break, so without
     // this a lunch taken that way would count as schedule progress.
-    // Reuses computeBookingActiveSpanSeconds (built for combining
-    // Leave/Reopen cycles in the summary report) so a booking that was
-    // ended and reopened later doesn't count the gap in between as if it
-    // were collection time.
+    // Downtime/lunch are scoped to just today's entries, matching the span
+    // itself only covering today's portion of the booking.
     let totalSeconds = 0;
-    bookingIds.forEach(bid => {
-      const bookingEntries = entries.filter(e => e.bookingId === bid)
+    Object.keys(byBooking).forEach(bid => {
+      const bookingEntries = byBooking[bid]
         .sort((a, b) => (entrySortValue(a) - entrySortValue(b)) || (a.seq - b.seq));
-      const span = computeBookingActiveSpanSeconds(bookingEntries);
-      const downtime = computeCategorySecondsInSegment(bookingEntries, 'downtime');
-      const lunch = computeCategorySecondsInSegment(bookingEntries, 'lunch');
+      if (!bookingEntries.some(e => e.date === today)) return; // nothing happened on it today
+
+      const info = getBookingLifecycleInfo(bookingEntries);
+      if ((info.type || '').toLowerCase() !== item.type.toLowerCase()) return;
+      if (!isCorlTask && item.number) {
+        const numberField = derivedNumberKind === 'Policy' ? info.policyNumber : derivedNumberKind === 'Task' ? info.hbTaskNumber : info.ucNumber;
+        if (numberField !== String(item.number)) return;
+      }
+
+      const todaysEntries = bookingEntries.filter(e => e.date === today);
+      const span = computeTodaysPortionOfBookingSeconds(bookingEntries);
+      const downtime = computeCategorySecondsInSegment(todaysEntries, 'downtime');
+      const lunch = computeCategorySecondsInSegment(todaysEntries, 'lunch');
       totalSeconds += Math.max(0, span - downtime - lunch);
     });
 
