@@ -1006,6 +1006,23 @@ let entries = [];
     }
   }
 
+  // A booking can live through more than one operator's hands (shift
+  // handoffs, someone joining to take over). Given that booking's own
+  // entries in chronological order, this returns just the tail belonging
+  // to CURRENT_OPERATOR's own stint — from the point they most recently
+  // took it over, onward — so "elapsed" next to their name means what
+  // they've actually done, not every operator who ever touched this
+  // booking before them. A booking that's only ever had one operator
+  // returns the whole thing unchanged.
+  function getCurrentOperatorStintEntries(sortedBookingEntries, operator) {
+    let startIdx = 0;
+    for (let i = sortedBookingEntries.length - 1; i >= 0; i--) {
+      const op = sortedBookingEntries[i].operator;
+      if (op && op !== operator) { startIdx = i + 1; break; }
+    }
+    return sortedBookingEntries.slice(startIdx);
+  }
+
   function updateSessionProgressBar() {
     const wrap = document.getElementById('sessionProgressWrap');
     if (!wrap) return;
@@ -1030,10 +1047,17 @@ let entries = [];
       return;
     }
 
-    const currentSeg = viewEntries.slice().sort((a, b) => (entrySortValue(a) - entrySortValue(b)) || (a.seq - b.seq));
+    const bookingSeg = viewEntries.slice().sort((a, b) => (entrySortValue(a) - entrySortValue(b)) || (a.seq - b.seq));
+    // Only THIS operator's own stint on the booking — see
+    // getCurrentOperatorStintEntries above for why that's not just
+    // bookingSeg itself whenever the booking has changed hands.
+    const currentSeg = getCurrentOperatorStintEntries(bookingSeg, currentOperator);
     if (!currentSeg || currentSeg.length === 0) {
       document.getElementById('sessionProgressOperator').textContent = currentOperator || '—';
       document.getElementById('sessionProgressElapsed').textContent = 'Session not started yet';
+      document.getElementById('segActive').style.width = '0%';
+      document.getElementById('segDowntime').style.width = '0%';
+      document.getElementById('segLunch').style.width = '0%';
       return;
     }
 
