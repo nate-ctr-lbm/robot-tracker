@@ -718,7 +718,16 @@ let entries = [];
     return computeCategorySecondsInSegment(segmentEntries, 'lunch');
   }
 
-  function computeCategorySecondsInSegment(segmentEntries, category) {
+  // includeOpenToNow defaults to false/omitted, which keeps every existing
+  // caller's behavior exactly as it was: a category that's STARTED but not
+  // yet ENDED contributes nothing. That's correct for a closed, historical
+  // segment (a past day being reviewed, say), where "now" has no bearing on
+  // it. It's wrong for anything showing LIVE, right-now state: a downtime
+  // or lunch that's actively in progress should already count against the
+  // elapsed/active number ticking on screen, not wait until it's closed to
+  // suddenly subtract all at once. Callers showing today's live state pass
+  // true explicitly; nothing else changes.
+  function computeCategorySecondsInSegment(segmentEntries, category, includeOpenToNow) {
     let total = 0;
     let openStart = null;
     const startRe = new RegExp(category + '\\s+started', 'i');
@@ -737,6 +746,13 @@ let entries = [];
         openStart = null;
       }
     });
+    if (includeOpenToNow && openStart !== null) {
+      const now = new Date();
+      const nowSeconds = now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds();
+      let diff = nowSeconds - openStart;
+      if (diff < 0) diff += 24 * 3600;
+      total += diff;
+    }
     return total;
   }
 
@@ -793,7 +809,10 @@ let entries = [];
     // diff (the raw, un-subtracted span) is kept as-is below for
     // updateDowntimeAlert's percentage math, which needs the full total as
     // its denominator — only the displayed text itself excludes downtime.
-    const downtimeSecs = computeCategorySecondsInSegment(currentSessionEntries, 'downtime');
+    // includeOpenToNow=true: this is always the device's own live, current
+    // booking, so a downtime that's still open right now should already
+    // count against this number, not wait until it's closed.
+    const downtimeSecs = computeCategorySecondsInSegment(currentSessionEntries, 'downtime', true);
     const activeDiff = Math.max(0, diff - downtimeSecs);
     setDisplay(formatDuration(activeDiff));
 
@@ -810,7 +829,9 @@ let entries = [];
       return;
     }
 
-    const downtimeSecs = computeCategorySecondsInSegment(currentSessionEntries, 'downtime');
+    // Same live-context reasoning as updateSessionDuration above — this is
+    // always the device's own current booking, so an open downtime counts.
+    const downtimeSecs = computeCategorySecondsInSegment(currentSessionEntries, 'downtime', true);
     const pct = Math.round((downtimeSecs / sessionSpanSeconds) * 100);
 
     if (pct >= DOWNTIME_ALERT_THRESHOLD_PCT) {
@@ -1069,8 +1090,14 @@ let entries = [];
     if (totalElapsed < 0) totalElapsed += 24 * 3600;
     if (totalElapsed <= 0) totalElapsed = 1;
 
-    const downtimeSecs = computeCategorySecondsInSegment(currentSeg, 'downtime');
-    const lunchSecs = computeCategorySecondsInSegment(currentSeg, 'lunch');
+    // includeOpenToNow=true: this card is always live, current-operator
+    // state. Without it, a downtime/lunch still in progress (started, not
+    // yet ended) contributed nothing here, so "elapsed" kept climbing as if
+    // the operator were active the whole time they were actually sitting in
+    // downtime — exactly the bug reported: the bar stayed one solid color
+    // and the number never reflected downtime until it was closed.
+    const downtimeSecs = computeCategorySecondsInSegment(currentSeg, 'downtime', true);
+    const lunchSecs = computeCategorySecondsInSegment(currentSeg, 'lunch', true);
     const activeSecs = Math.max(0, totalElapsed - downtimeSecs - lunchSecs);
 
     document.getElementById('segActive').style.width = (activeSecs / totalElapsed * 100) + '%';
@@ -2270,7 +2297,11 @@ let entries = [];
       const lastTs = seg[seg.length - 1].timestamp;
       const info = getBookingLifecycleInfo(seg);
       const isOngoing = info.isOngoing;
-      const downtimeSecs = computeCategorySecondsInSegment(seg, 'downtime');
+      // Only treat an open downtime as running to "now" when the summary
+      // being viewed IS today — otherwise a past day being reviewed, with
+      // some stray never-closed downtime in it, would wrongly grow against
+      // today's real-world clock instead of just reflecting what's logged.
+      const downtimeSecs = computeCategorySecondsInSegment(seg, 'downtime', isViewingToday());
 
       // Sum each active period rather than a naive first-to-last span —
       // this is what correctly combines a booking that was left/ended and
@@ -3574,8 +3605,12 @@ let entries = [];
 
       const todaysEntries = bookingEntries.filter(e => e.date === today);
       const span = computeTodaysPortionOfBookingSeconds(bookingEntries);
-      const downtime = computeCategorySecondsInSegment(todaysEntries, 'downtime');
-      const lunch = computeCategorySecondsInSegment(todaysEntries, 'lunch');
+      // includeOpenToNow=true: Today's Schedule is always about today by
+      // construction (see `today` above), so a downtime/lunch still open
+      // right now should already count against today's progress, same as
+      // the live "Currently" card — not wait until it's closed.
+      const downtime = computeCategorySecondsInSegment(todaysEntries, 'downtime', true);
+      const lunch = computeCategorySecondsInSegment(todaysEntries, 'lunch', true);
       totalSeconds += Math.max(0, span - downtime - lunch);
     });
 
